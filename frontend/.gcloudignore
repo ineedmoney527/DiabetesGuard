@@ -1,0 +1,13 @@
+# don’t upload your local dependencies
+node_modules/
+
+# your build artefacts
+build/
+dist/
+
+# VCS, logs, env‑files, coverage, etc
+.git/
+npm-debug.log
+
+*.log
+coverage/
