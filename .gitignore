@@ -1,0 +1,21 @@
+# Node.js
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# React
+build/
+.DS_Store
+
+# Jupyter/ML
+*.ipynb_checkpoints
+*.pkl
+*.h5
+
+# Logs and temp files
+*.log
+*.tmp
+backend/serviceAccountKey.json
