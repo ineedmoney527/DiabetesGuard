@@ -259,7 +259,7 @@ const Login = () => {
               Sign In
             </Typography>
             <Typography variant="subtitle1" color="text.secondary">
-              Welcome back to Diabetick
+              Welcome back to Diabetes Guard
             </Typography>
             <Divider sx={{ my: 3 }} />
           </Box>
