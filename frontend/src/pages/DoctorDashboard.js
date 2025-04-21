@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Container,
   Grid,
@@ -56,6 +56,9 @@ import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
 import NavBar from "../components/NavBar";
+import { jsPDF } from "jspdf";
+import "jspdf-autotable";
+import html2canvas from "html2canvas";
 
 const HealthProfessionalDashboard = () => {
   const { currentUser } = useAuth();
@@ -80,6 +83,14 @@ const HealthProfessionalDashboard = () => {
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
   const [aggregateHealthTrends, setAggregateHealthTrends] = useState([]);
   const [aggregateRiskTrends, setAggregateRiskTrends] = useState([]);
+  const [pdfGenerating, setPdfGenerating] = useState(false);
+  const [pdfError, setPdfError] = useState("");
+
+  // Add refs for charts to be included in PDF
+  const healthTrendsChartRef = useRef(null);
+  const riskTrendsChartRef = useRef(null);
+  const patientHealthTrendsChartRef = useRef(null);
+  const patientRiskTrendsChartRef = useRef(null);
 
   // Fetch employees on component mount
   useEffect(() => {
@@ -360,6 +371,335 @@ const HealthProfessionalDashboard = () => {
     return differenceInYears(new Date(), new Date(birthdate));
   };
 
+  // Generate PDF with aggregate data
+  const generateAggregatePDF = async () => {
+    try {
+      setPdfGenerating(true);
+      setPdfError("");
+
+      const doc = new jsPDF();
+
+      // Add title
+      doc.setFontSize(18);
+      doc.text("Aggregate Diabetes Health Report", 105, 15, {
+        align: "center",
+      });
+
+      // Add doctor info and date range
+      doc.setFontSize(12);
+      // doc.text(`Doctor: ${currentUser?.displayName || "N/A"}`, 20, 30);
+      doc.text(
+        `Date Range: ${format(dateRange.startDate, "MM/dd/yyyy")} - ${format(
+          dateRange.endDate,
+          "MM/dd/yyyy"
+        )}`,
+        20,
+        40
+      );
+
+      // Add filter information
+      let yOffset = 50;
+      doc.text("Applied Filters:", 20, yOffset);
+      doc.text(
+        `Age Group: ${
+          filters.ageGroup === "all"
+            ? "All Ages"
+            : filters.ageGroup === "under30"
+            ? "Under 30"
+            : filters.ageGroup === "30to50"
+            ? "30-50"
+            : "Over 50"
+        }`,
+        30,
+        yOffset + 10
+      );
+      doc.text(
+        `Gender: ${filters.gender === "all" ? "All Genders" : filters.gender}`,
+        30,
+        yOffset + 20
+      );
+      doc.text(
+        `Position: ${
+          filters.position === "all" ? "All Positions" : filters.position
+        }`,
+        30,
+        yOffset + 30
+      );
+
+      yOffset += 40;
+
+      // Add employee statistics
+      doc.text("Employee Statistics:", 20, yOffset);
+      doc.text(
+        `Total Employees: ${filteredEmployees.length}`,
+        30,
+        yOffset + 10
+      );
+
+      if (aggregateStats) {
+        doc.text(
+          `High Risk Employees: ${aggregateStats.riskDistribution.high}`,
+          30,
+          yOffset + 20
+        );
+        doc.text(
+          `Medium Risk Employees: ${aggregateStats.riskDistribution.medium}`,
+          30,
+          yOffset + 30
+        );
+        doc.text(
+          `Low Risk Employees: ${aggregateStats.riskDistribution.low}`,
+          30,
+          yOffset + 40
+        );
+      }
+
+      yOffset += 50;
+
+      // Capture and add health trends chart
+      if (healthTrendsChartRef.current && aggregateHealthTrends.length > 0) {
+        doc.text("Aggregate Health Metrics Trends", 105, yOffset, {
+          align: "center",
+        });
+        yOffset += 10;
+
+        const healthTrendsCanvas = await html2canvas(
+          healthTrendsChartRef.current
+        );
+        const healthTrendsImgData = healthTrendsCanvas.toDataURL("image/png");
+        doc.addImage(healthTrendsImgData, "PNG", 15, yOffset, 180, 80);
+        yOffset += 90;
+      }
+
+      // Add a new page for risk trends
+      doc.addPage();
+      yOffset = 20;
+
+      // Capture and add risk trends chart
+      if (riskTrendsChartRef.current && aggregateRiskTrends.length > 0) {
+        doc.text("Aggregate Risk Trends", 105, yOffset, { align: "center" });
+        yOffset += 10;
+
+        const riskTrendsCanvas = await html2canvas(riskTrendsChartRef.current);
+        const riskTrendsImgData = riskTrendsCanvas.toDataURL("image/png");
+        doc.addImage(riskTrendsImgData, "PNG", 15, yOffset, 180, 80);
+        yOffset += 90;
+      }
+
+      // Add employee list
+      if (filteredEmployees.length > 0) {
+        doc.addPage();
+        doc.text("Employee Risk Summary", 105, 15, { align: "center" });
+
+        const tableData = filteredEmployees.map((employee) => [
+          employee.name,
+          calculateAge(employee.birthdate),
+          employee.gender,
+          employee.latestHealthData?.timestamp
+            ? format(
+                new Date(employee.latestHealthData.timestamp),
+                "MM/dd/yyyy"
+              )
+            : "No data",
+          employee.latestHealthData?.prediction?.risk_level || "No data",
+          employee.latestHealthData?.prediction
+            ? `${(
+                employee.latestHealthData.prediction.probability * 100
+              ).toFixed(1)}%`
+            : "N/A",
+        ]);
+
+        doc.autoTable({
+          startY: 25,
+          head: [
+            [
+              "Name",
+              "Age",
+              "Gender",
+              "Last Visit",
+              "Risk Level",
+              "Probability",
+            ],
+          ],
+          body: tableData,
+        });
+      }
+
+      // Save the PDF
+      doc.save(`aggregate_health_report_${format(new Date(), "yyyyMMdd")}.pdf`);
+    } catch (error) {
+      console.error("Error generating aggregate PDF:", error);
+      setPdfError("Failed to generate PDF report. Please try again.");
+    } finally {
+      setPdfGenerating(false);
+    }
+  };
+
+  // Generate PDF for a specific employee/patient
+  const generateEmployeePDF = async () => {
+    if (!selectedEmployee) return;
+
+    try {
+      setPdfGenerating(true);
+      setPdfError("");
+
+      const doc = new jsPDF();
+
+      // Add title
+      doc.setFontSize(18);
+      doc.text("Employee Health Report", 105, 15, { align: "center" });
+
+      // Add employee info
+      doc.setFontSize(14);
+      doc.text(`Employee: ${selectedEmployee.name}`, 20, 30);
+
+      doc.setFontSize(12);
+      doc.text(`Age: ${calculateAge(selectedEmployee.birthdate)}`, 20, 40);
+      doc.text(`Gender: ${selectedEmployee.gender}`, 20, 50);
+      doc.text(`Email: ${selectedEmployee.email}`, 20, 60);
+
+      // Add date range
+      doc.text(
+        `Report Period: ${format(dateRange.startDate, "MM/dd/yyyy")} - ${format(
+          dateRange.endDate,
+          "MM/dd/yyyy"
+        )}`,
+        20,
+        70
+      );
+
+      let yOffset = 85;
+
+      // Add latest health data if available
+      if (employeeHealthData.length > 0) {
+        doc.text("Latest Health Readings:", 20, yOffset);
+        yOffset += 10;
+
+        const latestData = employeeHealthData[0];
+        doc.text(
+          `Date: ${format(new Date(latestData.timestamp), "MM/dd/yyyy")}`,
+          30,
+          yOffset
+        );
+        yOffset += 10;
+        doc.text(`Glucose: ${latestData.Glucose} mg/dL`, 30, yOffset);
+        yOffset += 10;
+        doc.text(
+          `Blood Pressure: ${latestData.BloodPressure} mm Hg`,
+          30,
+          yOffset
+        );
+        yOffset += 10;
+        doc.text(`Insulin: ${latestData.Insulin} μU/ml`, 30, yOffset);
+        yOffset += 10;
+        doc.text(`BMI: ${latestData.BMI} kg/m²`, 30, yOffset);
+        yOffset += 10;
+
+        // Add latest prediction if available
+        if (latestData.prediction) {
+          yOffset += 5;
+          doc.text("Latest Prediction:", 20, yOffset);
+          yOffset += 10;
+          doc.text(
+            `Risk Level: ${latestData.prediction.risk_level}`,
+            30,
+            yOffset
+          );
+          yOffset += 10;
+          doc.text(
+            `Probability: ${(latestData.prediction.probability * 100).toFixed(
+              1
+            )}%`,
+            30,
+            yOffset
+          );
+          yOffset += 15;
+        }
+
+        // Add a table with historical data
+        const tableData = employeeHealthData.map((record) => [
+          record.timestamp
+            ? format(new Date(record.timestamp), "MM/dd/yyyy")
+            : "N/A",
+          record.Glucose,
+          record.BloodPressure,
+          record.BMI,
+          record.Insulin,
+          record.prediction?.risk_level || "N/A",
+          record.prediction
+            ? `${(record.prediction.probability * 100).toFixed(1)}%`
+            : "N/A",
+        ]);
+
+        doc.autoTable({
+          startY: yOffset,
+          head: [
+            [
+              "Date",
+              "Glucose",
+              "BP",
+              "BMI",
+              "Insulin",
+              "Risk Level",
+              "Probability",
+            ],
+          ],
+          body: tableData,
+        });
+
+        // Add a new page for charts
+        doc.addPage();
+        yOffset = 20;
+
+        // Add health trends chart if there are at least 2 data points
+        if (
+          patientHealthTrendsChartRef.current &&
+          employeeHealthData.length > 1
+        ) {
+          doc.text("Health Metrics Trends", 105, yOffset, { align: "center" });
+          yOffset += 10;
+
+          const healthTrendsCanvas = await html2canvas(
+            patientHealthTrendsChartRef.current
+          );
+          const healthTrendsImgData = healthTrendsCanvas.toDataURL("image/png");
+          doc.addImage(healthTrendsImgData, "PNG", 15, yOffset, 180, 80);
+          yOffset += 90;
+        }
+
+        // Add risk trends chart if there are at least 2 data points
+        if (
+          patientRiskTrendsChartRef.current &&
+          employeeHealthData.length > 1
+        ) {
+          doc.text("Risk Prediction Trend", 105, yOffset, { align: "center" });
+          yOffset += 10;
+
+          const riskTrendsCanvas = await html2canvas(
+            patientRiskTrendsChartRef.current
+          );
+          const riskTrendsImgData = riskTrendsCanvas.toDataURL("image/png");
+          doc.addImage(riskTrendsImgData, "PNG", 15, yOffset, 180, 80);
+        }
+      } else {
+        doc.text("No health data available for this employee.", 20, yOffset);
+      }
+
+      // Save the PDF
+      doc.save(
+        `employee_health_report_${selectedEmployee.name.replace(
+          /\s+/g,
+          "_"
+        )}_${format(new Date(), "yyyyMMdd")}.pdf`
+      );
+    } catch (error) {
+      console.error("Error generating employee PDF:", error);
+      setPdfError("Failed to generate PDF report. Please try again.");
+    } finally {
+      setPdfGenerating(false);
+    }
+  };
+
   return (
     <>
       <NavBar />
@@ -402,28 +742,50 @@ const HealthProfessionalDashboard = () => {
           aria-labelledby="employee-details-dialog-title"
         >
           <DialogTitle id="employee-details-dialog-title">
-            <Box sx={{ display: "flex", alignItems: "center" }}>
-              <Avatar
-                sx={{
-                  width: 50,
-                  height: 50,
-                  bgcolor: "primary.main",
-                  fontSize: "1.5rem",
-                  mr: 2,
-                }}
-              >
-                {selectedEmployee?.name[0]}
-              </Avatar>
-              <Box>
-                <Typography variant="h6">{selectedEmployee?.name}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {selectedEmployee && calculateAge(selectedEmployee.birthdate)}{" "}
-                  years old • {selectedEmployee?.gender}
-                </Typography>
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <Box sx={{ display: "flex", alignItems: "center" }}>
+                <Avatar
+                  sx={{
+                    width: 50,
+                    height: 50,
+                    bgcolor: "primary.main",
+                    fontSize: "1.5rem",
+                    mr: 2,
+                  }}
+                >
+                  {selectedEmployee?.name[0]}
+                </Avatar>
+                <Box>
+                  <Typography variant="h6">{selectedEmployee?.name}</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {selectedEmployee &&
+                      calculateAge(selectedEmployee.birthdate)}{" "}
+                    years old • {selectedEmployee?.gender}
+                  </Typography>
+                </Box>
               </Box>
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={generateEmployeePDF}
+                disabled={pdfGenerating || employeeHealthData.length === 0}
+              >
+                {pdfGenerating ? <CircularProgress size={24} /> : "Export PDF"}
+              </Button>
             </Box>
           </DialogTitle>
           <DialogContent dividers>
+            {pdfError && (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                {pdfError}
+              </Alert>
+            )}
             {selectedEmployee && (
               <Grid container spacing={3}>
                 <Grid item xs={12} md={4}>
@@ -659,7 +1021,11 @@ const HealthProfessionalDashboard = () => {
                           <CircularProgress />
                         </Box>
                       ) : employeeHealthData.length > 1 ? (
-                        <ResponsiveContainer width="100%" height={300}>
+                        <ResponsiveContainer
+                          width="100%"
+                          height={300}
+                          ref={patientHealthTrendsChartRef}
+                        >
                           <LineChart
                             data={getEmployeeTrendData()}
                             margin={{
@@ -739,7 +1105,11 @@ const HealthProfessionalDashboard = () => {
                               higher risk levels.
                             </Typography>
                           </Box>
-                          <ResponsiveContainer width="100%" height={250}>
+                          <ResponsiveContainer
+                            width="100%"
+                            height={250}
+                            ref={patientRiskTrendsChartRef}
+                          >
                             <ComposedChart
                               data={getRiskTrendData()}
                               margin={{
@@ -1053,9 +1423,41 @@ const HealthProfessionalDashboard = () => {
             <>
               {/* Position filter for doctor dashboard */}
               <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
-                <Typography variant="h5" component="h2" gutterBottom>
-                  Filter Analytics
-                </Typography>
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    mb: 2,
+                  }}
+                >
+                  <Typography variant="h5" component="h2" gutterBottom>
+                    Filter Analytics
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    onClick={generateAggregatePDF}
+                    disabled={
+                      pdfGenerating ||
+                      (aggregateHealthTrends.length === 0 &&
+                        aggregateRiskTrends.length === 0)
+                    }
+                  >
+                    {pdfGenerating ? (
+                      <CircularProgress size={24} />
+                    ) : (
+                      "Export PDF Report"
+                    )}
+                  </Button>
+                </Box>
+
+                {pdfError && (
+                  <Alert severity="error" sx={{ mb: 2 }}>
+                    {pdfError}
+                  </Alert>
+                )}
+
                 <Grid container spacing={3} alignItems="center">
                   <Grid item xs={12} sm={3}>
                     <FormControl fullWidth size="small">
@@ -1148,7 +1550,7 @@ const HealthProfessionalDashboard = () => {
                 <Typography variant="h6" gutterBottom>
                   Aggregate Health Metrics Trends
                 </Typography>
-                <Box sx={{ height: 400, mt: 3 }}>
+                <Box sx={{ height: 400, mt: 3 }} ref={healthTrendsChartRef}>
                   {loading ? (
                     <Box
                       sx={{ display: "flex", justifyContent: "center", pt: 10 }}
@@ -1215,7 +1617,7 @@ const HealthProfessionalDashboard = () => {
                 <Typography variant="h6" gutterBottom>
                   Aggregate Risk Trends
                 </Typography>
-                <Box sx={{ height: 400, mt: 3 }}>
+                <Box sx={{ height: 400, mt: 3 }} ref={riskTrendsChartRef}>
                   {loading ? (
                     <Box
                       sx={{ display: "flex", justifyContent: "center", pt: 10 }}

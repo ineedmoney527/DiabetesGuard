@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Container,
   Grid,
@@ -34,6 +34,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { jsPDF } from "jspdf";
 import "jspdf-autotable";
 import NavBar from "../components/NavBar";
+import html2canvas from "html2canvas";
 
 const PatientDashboard = () => {
   const { currentUser } = useAuth();
@@ -60,6 +61,10 @@ const PatientDashboard = () => {
     Insulin: 0,
     BMI: 0,
   });
+
+  // Add refs for the charts
+  const healthMetricsChartRef = useRef(null);
+  const riskTrendChartRef = useRef(null);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -202,71 +207,126 @@ const PatientDashboard = () => {
     fetchHealthData();
   };
 
-  const generatePDF = () => {
-    const doc = new jsPDF();
+  const generatePDF = async () => {
+    try {
+      setLoading(true);
+      const doc = new jsPDF();
 
-    // Add title
-    doc.setFontSize(18);
-    doc.text("Diabetes Health Report", 105, 15, { align: "center" });
+      // Add title
+      doc.setFontSize(18);
+      doc.text("Diabetes Health Report", 105, 15, { align: "center" });
 
-    // Add user info
-    doc.setFontSize(12);
-    doc.text(`Patient: ${currentUser?.displayName || "N/A"}`, 20, 30);
-    doc.text(
-      `Date Range: ${format(dateRange.startDate, "MM/dd/yyyy")} - ${format(
-        dateRange.endDate,
-        "MM/dd/yyyy"
-      )}`,
-      20,
-      40
-    );
-
-    // Add latest prediction if available
-    if (prediction) {
-      doc.text("Latest Prediction:", 20, 55);
-      doc.text(`Risk Level: ${prediction.risk_level}`, 30, 65);
+      // Add user info
+      doc.setFontSize(12);
+      doc.text(`Patient: ${currentUser?.displayName || "N/A"}`, 20, 30);
       doc.text(
-        `Probability: ${(prediction.probability * 100).toFixed(2)}%`,
-        30,
-        75
+        `Date Range: ${format(dateRange.startDate, "MM/dd/yyyy")} - ${format(
+          dateRange.endDate,
+          "MM/dd/yyyy"
+        )}`,
+        20,
+        40
       );
-    } else if (healthData.length > 0 && healthData[0].prediction) {
-      const latestPrediction = healthData[0].prediction;
-      doc.text("Latest Prediction:", 20, 55);
-      doc.text(`Risk Level: ${latestPrediction.risk_level}`, 30, 65);
-      doc.text(
-        `Probability: ${(latestPrediction.probability * 100).toFixed(2)}%`,
-        30,
-        75
-      );
+
+      // Add latest prediction if available
+      let yOffset = 55;
+      if (prediction) {
+        doc.text("Latest Prediction:", 20, yOffset);
+        doc.text(`Risk Level: ${prediction.risk_level}`, 30, yOffset + 10);
+        doc.text(
+          `Probability: ${(prediction.probability * 100).toFixed(2)}%`,
+          30,
+          yOffset + 20
+        );
+        yOffset += 30;
+      } else if (healthData.length > 0 && healthData[0].prediction) {
+        const latestPrediction = healthData[0].prediction;
+        doc.text("Latest Prediction:", 20, yOffset);
+        doc.text(
+          `Risk Level: ${latestPrediction.risk_level}`,
+          30,
+          yOffset + 10
+        );
+        doc.text(
+          `Probability: ${(latestPrediction.probability * 100).toFixed(2)}%`,
+          30,
+          yOffset + 20
+        );
+        yOffset += 30;
+      }
+
+      // Add table with health data
+      if (healthData.length > 0) {
+        const tableData = healthData.map((record) => [
+          record.timestamp
+            ? format(new Date(record.timestamp), "MM/dd/yyyy")
+            : "N/A",
+          record.Glucose,
+          record.BloodPressure,
+          record.BMI,
+          record.Insulin,
+          record.prediction?.risk_level || "N/A",
+        ]);
+
+        doc.autoTable({
+          startY: yOffset,
+          head: [
+            [
+              "Date",
+              "Glucose",
+              "Blood Pressure",
+              "BMI",
+              "Insulin",
+              "Risk Level",
+            ],
+          ],
+          body: tableData,
+        });
+
+        yOffset = doc.lastAutoTable.finalY + 10;
+      } else {
+        doc.text("No health data available for this period.", 20, yOffset);
+        yOffset += 10;
+      }
+
+      // Capture and add health metrics chart if it exists and has data
+      if (healthMetricsChartRef.current && chartData.length > 0) {
+        doc.text("Health Metrics Trends", 105, yOffset, { align: "center" });
+        yOffset += 10;
+
+        const healthMetricsCanvas = await html2canvas(
+          healthMetricsChartRef.current
+        );
+        const healthMetricsImgData = healthMetricsCanvas.toDataURL("image/png");
+        doc.addImage(healthMetricsImgData, "PNG", 15, yOffset, 180, 80);
+        yOffset += 90;
+      }
+
+      // Capture and add risk trend chart if it exists and has data
+      if (
+        riskTrendChartRef.current &&
+        chartData.some((data) => data.diabetesRisk > 0)
+      ) {
+        doc.addPage();
+        yOffset = 20;
+        doc.text("Diabetes Risk Prediction Trend", 105, yOffset, {
+          align: "center",
+        });
+        yOffset += 10;
+
+        const riskTrendCanvas = await html2canvas(riskTrendChartRef.current);
+        const riskTrendImgData = riskTrendCanvas.toDataURL("image/png");
+        doc.addImage(riskTrendImgData, "PNG", 15, yOffset, 180, 80);
+      }
+
+      // Save the PDF
+      doc.save(`diabetes_report_${format(new Date(), "yyyyMMdd")}.pdf`);
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      setError("Failed to generate PDF report. Please try again.");
+    } finally {
+      setLoading(false);
     }
-
-    // Add table with health data
-    if (healthData.length > 0) {
-      const tableData = healthData.map((record) => [
-        record.timestamp
-          ? format(new Date(record.timestamp), "MM/dd/yyyy")
-          : "N/A",
-        record.Glucose,
-        record.BloodPressure,
-        record.BMI,
-        record.Insulin,
-        record.prediction?.risk_level || "N/A",
-      ]);
-
-      doc.autoTable({
-        startY: 90,
-        head: [
-          ["Date", "Glucose", "Blood Pressure", "BMI", "Insulin", "Risk Level"],
-        ],
-        body: tableData,
-      });
-    } else {
-      doc.text("No health data available for this period.", 20, 90);
-    }
-
-    // Save the PDF
-    doc.save(`diabetes_report_${format(new Date(), "yyyyMMdd")}.pdf`);
   };
 
   // Get colors for charts based on value ranges
@@ -755,7 +815,10 @@ const PatientDashboard = () => {
               </Typography>
 
               {healthData.length > 0 ? (
-                <Box sx={{ height: 400, width: "100%" }}>
+                <Box
+                  sx={{ height: 400, width: "100%" }}
+                  ref={healthMetricsChartRef}
+                >
                   {chartData && chartData.length > 0 && (
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart
@@ -825,7 +888,10 @@ const PatientDashboard = () => {
               </Typography>
 
               {healthData.length > 0 ? (
-                <Box sx={{ height: 400, width: "100%" }}>
+                <Box
+                  sx={{ height: 400, width: "100%" }}
+                  ref={riskTrendChartRef}
+                >
                   {chartData &&
                   chartData.length > 0 &&
                   chartData.some((data) => data.diabetesRisk > 0) ? (
