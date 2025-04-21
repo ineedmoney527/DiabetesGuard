@@ -10,6 +10,7 @@ import {
   Typography,
   Paper,
   Link,
+  Backdrop,
   CircularProgress,
   Grid,
   FormControl,
@@ -66,13 +67,13 @@ const Register = () => {
     },
     validationSchema,
     onSubmit: async (values) => {
-      try {
-        setLoading(true);
-        console.log("Attempting registration for:", values.email);
+      setLoading(true);
+      console.log("Attempting registration for:", values.email);
 
+      try {
         // Convert birthdate to ISO string
         const birthdate = values.birthdate.toISOString().split("T")[0];
-
+        toast.info("Registering...");
         // Prepare user data for Firebase
         const userData = {
           name: values.name,
@@ -94,11 +95,15 @@ const Register = () => {
           "Registration successful! Please verify your email before logging in."
         );
         console.log("User info:", userInfo);
+
         if (userInfo.isPendingVerification) {
           console.log("Navigating to verify-email");
+          // Keep loading=true so Backdrop persists until unmount
           navigate("/verify-email", {
+            replace: true,
             state: { email: values.email },
           });
+          return; // skip clearing loading
         }
       } catch (error) {
         console.error("Registration error:", error);
@@ -107,14 +112,21 @@ const Register = () => {
             ? "This email is already registered"
             : error.message;
         toast.error(errorMessage);
-      } finally {
-        setLoading(false);
+        setLoading(false); // only clear on error
       }
     },
   });
 
   return (
     <Container component="main" maxWidth="sm" sx={{ py: 4 }}>
+      {/* Loading Backdrop */}
+      <Backdrop
+        sx={{ color: "#fff", zIndex: (theme) => theme.zIndex.drawer + 1 }}
+        open={loading}
+      >
+        <CircularProgress color="inherit" />
+      </Backdrop>
+
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
