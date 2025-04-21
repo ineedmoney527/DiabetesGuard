@@ -1,4 +1,4 @@
-# Diabetick Project (Placeholder Name)
+# Diabetes Guard Project
 
 This project is a full-stack application designed for [**Briefly describe the main goal, e.g., diabetes prediction and management**]. It consists of a frontend user interface, a backend API, and a machine learning service.
 
