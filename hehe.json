@@ -1,0 +1,197 @@
+{
+  "displayName": "Cloud Run Service Monitoring (Diabetes App)",
+  "gridLayout": {
+    "columns": "2",
+    "widgets": [
+      {
+        "title": "Total Request Count (All Services)",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" resource.label.service_name=one_of(\"diabetes-backend\", \"diabetes-frontend\", \"diabetes-ml\")",
+                  "aggregation": {
+                    "perSeriesAligner": "ALIGN_SUM",
+                    "crossSeriesReducer": "REDUCE_SUM",
+                    "alignmentPeriod": "60s"
+                  }
+                },
+                "unitOverride": "1"
+              },
+              "plotType": "LINE"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": {
+            "label": "count",
+            "scale": "LINEAR"
+          },
+          "chartOptions": {
+            "mode": "COLOR"
+          }
+        }
+      },
+      {
+        "title": "5xx Server Error Count (All Services)",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" metric.label.response_code_class=\"5xx\" resource.label.service_name=one_of(\"diabetes-backend\", \"diabetes-frontend\", \"diabetes-ml\")",
+                  "aggregation": {
+                    "perSeriesAligner": "ALIGN_SUM",
+                    "crossSeriesReducer": "REDUCE_SUM",
+                    "alignmentPeriod": "60s"
+                  }
+                },
+                "unitOverride": "1"
+              },
+              "plotType": "LINE"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": {
+            "label": "count",
+            "scale": "LINEAR"
+          },
+          "chartOptions": {
+            "mode": "COLOR"
+          }
+        }
+      },
+      {
+        "title": "P95 Request Latency (ms) - Per Service",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"run.googleapis.com/request_latencies\" resource.type=\"cloud_run_revision\" resource.label.service_name=one_of(\"diabetes-backend\", \"diabetes-frontend\", \"diabetes-ml\")",
+                  "aggregation": {
+                    "perSeriesAligner": "ALIGN_PERCENTILE_95",
+                    "crossSeriesReducer": "REDUCE_NONE",
+                    "alignmentPeriod": "60s",
+                    "groupByFields": ["resource.label.service_name"]
+                  }
+                },
+                "unitOverride": "ms"
+              },
+              "plotType": "LINE",
+              "legendTemplate": "${resource.label.service_name}"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": {
+            "label": "ms",
+            "scale": "LINEAR"
+          },
+          "chartOptions": {
+            "mode": "COLOR"
+          }
+        }
+      },
+      {
+        "title": "Container CPU Utilization (%) - Per Service",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"run.googleapis.com/container/cpu/utilizations\" resource.type=\"cloud_run_revision\" resource.label.service_name=one_of(\"diabetes-backend\", \"diabetes-frontend\", \"diabetes-ml\")",
+                  "aggregation": {
+                    "perSeriesAligner": "ALIGN_MEAN",
+                    "crossSeriesReducer": "REDUCE_MEAN",
+                    "alignmentPeriod": "60s",
+                    "groupByFields": ["resource.label.service_name"]
+                  }
+                },
+                "unitOverride": "%"
+              },
+              "plotType": "LINE",
+              "legendTemplate": "${resource.label.service_name}"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": {
+            "label": "% utilization",
+            "scale": "LINEAR"
+          },
+          "chartOptions": {
+            "mode": "COLOR"
+          }
+        }
+      },
+      {
+        "title": "Container Memory Utilization (%) - Per Service",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"run.googleapis.com/container/memory/utilizations\" resource.type=\"cloud_run_revision\" resource.label.service_name=one_of(\"diabetes-backend\", \"diabetes-frontend\", \"diabetes-ml\")",
+                  "aggregation": {
+                    "perSeriesAligner": "ALIGN_MEAN",
+                    "crossSeriesReducer": "REDUCE_MEAN",
+                    "alignmentPeriod": "60s",
+                    "groupByFields": ["resource.label.service_name"]
+                  }
+                },
+                "unitOverride": "%"
+              },
+              "plotType": "LINE",
+              "legendTemplate": "${resource.label.service_name}"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": {
+            "label": "% utilization",
+            "scale": "LINEAR"
+          },
+          "chartOptions": {
+            "mode": "COLOR"
+          }
+        }
+      },
+      {
+        "title": "Container Instance Count - Per Service",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"run.googleapis.com/container/instance_count\" resource.type=\"cloud_run_revision\" resource.label.service_name=one_of(\"diabetes-backend\", \"diabetes-frontend\", \"diabetes-ml\")",
+                  "aggregation": {
+                    "perSeriesAligner": "ALIGN_SUM",
+                    "crossSeriesReducer": "REDUCE_SUM",
+                    "alignmentPeriod": "60s",
+                    "groupByFields": ["resource.label.service_name"]
+                  }
+                },
+                "unitOverride": "1"
+              },
+              "plotType": "LINE",
+              "legendTemplate": "${resource.label.service_name}"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": {
+            "label": "instance count",
+            "scale": "LINEAR"
+          },
+          "chartOptions": {
+            "mode": "COLOR"
+          }
+        }
+      },
+      {
+        "title": "Cloud Run Error Logs (Last Hour)",
+        "logsPanel": {
+          "filter": "resource.type=\"cloud_run_revision\"\nseverity>=ERROR\nresource.labels.service_name=(\"diabetes-backend\" OR \"diabetes-frontend\" OR \"diabetes-ml\")",
+          "resourceNames": ["projects/storied-shelter-456117-g9"]
+        }
+      }
+    ]
+  }
+}

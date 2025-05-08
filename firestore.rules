@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // By default, deny all reads and writes
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    // Allow backend service to write anywhere (this is handled by Firebase Admin SDK)
+    // The admin SDK bypasses security rules
+    
+    // For frontend users
+    match /users/{userId} {
+      // Allow users to read their own document (simplified rule)
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Admin update permissions (keep this part)
+      allow update: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Allow users to access their own health data
+    match /healthData/{documentId} {
+      allow read: if request.auth != null && 
+        resource.data.userId == request.auth.uid;
+      
+      // Allow doctors and admins to read all health data
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'doctor');
+    }
+    
+    // Allow patients to access their own prescriptions and doctors to access all prescriptions
+    match /prescriptions/{documentId} {
+      // Patients can read their own prescriptions
+      allow read: if request.auth != null && 
+        resource.data.patientId == request.auth.uid;
+      
+      // Doctors and admins can read and write prescriptions
+      allow read, write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'doctor');
+    }
+  }
+}

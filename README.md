@@ -24,7 +24,7 @@ This project is a full-stack application designed for [**Briefly describe the ma
 
 ```bash
 git clone <repository-url>
-cd Diabetick
+cd diabetes-guard
 ```
 
 **2. Backend Setup:**
@@ -87,8 +87,8 @@ Docker configurations are provided for each service (`Dockerfile`). You can buil
 
 ```bash
 cd backend
-docker build -t diabetick-backend .
-docker run -p <backend_port>:<container_port> --env-file .env diabetick-backend
+docker build -t diabetes-backend .
+docker run -p <backend_port>:<container_port> --env-file .env diabetes-backend
 ```
 
 ## Deployment

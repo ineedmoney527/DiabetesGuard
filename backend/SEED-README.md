@@ -1,6 +1,6 @@
-# Diabetick Database Seed Script
+# Database Seed Script
 
-This script generates dummy patient users and health data for the Diabetick application.
+This script generates dummy patient users and health data for the application.
 
 ## What it does
 
