@@ -43,8 +43,14 @@ const Dashboard = () => {
     }
 
     // Check user role from currentUser object as a backup
-    const effectiveRole = userRole || currentUser.role;
+    const effectiveRole = userRole || (currentUser ? currentUser.role : null);
     console.log("Effective role:", effectiveRole);
+
+    // If no role is available or still initializing, wait
+    if (!effectiveRole) {
+      console.log("Role information not yet available, waiting...");
+      return;
+    }
 
     // Check if doctor with inactive status
     if (effectiveRole === "doctor" && currentUser.status === "inactive") {
@@ -66,7 +72,9 @@ const Dashboard = () => {
       console.log("Redirecting to admin dashboard");
       navigate("/admin");
     } else {
-      console.log("No recognized role found:", effectiveRole);
+      console.log("Unrecognized role:", effectiveRole);
+      // Force a logout to reset the state
+      handleLogout();
     }
   }, [currentUser, userRole, loading, navigate]);
 

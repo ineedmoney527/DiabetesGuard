@@ -20,6 +20,8 @@ import {
   DialogContentText,
   DialogActions,
   Divider,
+  IconButton,
+  InputAdornment,
 } from "@mui/material";
 import { motion } from "framer-motion";
 import { toast } from "react-toastify";
@@ -32,6 +34,8 @@ import {
 import { getFirestore, doc, getDoc } from "firebase/firestore";
 import { useAuth } from "../contexts/AuthContext";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import { Visibility, VisibilityOff } from "@mui/icons-material";
+import logger from "../utils/logger";
 
 // Validation Schema for email/password form
 const validationSchema = Yup.object({
@@ -44,15 +48,32 @@ const validationSchema = Yup.object({
 // Component Definition
 const Login = () => {
   const navigate = useNavigate();
-  const { login, resendVerificationEmail, logout, currentUser } = useAuth();
+  const {
+    login,
+    resendVerificationEmail,
+    logout,
+    currentUser,
+    requiresMfa,
+    verifyMfaLogin,
+    cancelMfa,
+  } = useAuth();
 
   // --- State Variables ---
   const [loading, setLoading] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [verificationDialogOpen, setVerificationDialogOpen] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState("");
   const [verificationSending, setVerificationSending] = useState(false);
   const [tooManyRequestsError, setTooManyRequestsError] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+
+  // MFA verification state
+  const [showMfaVerification, setShowMfaVerification] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
+  const [mfaError, setMfaError] = useState("");
+  const [mfaLoading, setMfaLoading] = useState(false);
 
   // --- Refs ---
   const auth = getAuth(); // Firebase Auth instance
@@ -69,23 +90,6 @@ const Login = () => {
     return () => clearTimeout(timer);
   }, [resendCooldown]);
 
-  // Auto-logo ut effect - sign out any authenticated user when they reach the login page
-  useEffect(() => {
-    const autoLogout = async () => {
-      if (currentUser) {
-        try {
-          console.log("Auto-logout: Signing out existing user");
-          await logout();
-          // toast.info("You've been signed out for a new session");
-        } catch (error) {
-          console.error("Auto-logout error:", error);
-        }
-      }
-    };
-
-    autoLogout();
-  }, [currentUser, logout]);
-
   // Handle form submission with Formik
   const formik = useFormik({
     initialValues: {
@@ -93,11 +97,13 @@ const Login = () => {
       password: "",
     },
     validationSchema,
-    onSubmit: async (values) => {
+    onSubmit: async (values, formikHelpers) => {
       try {
-        await handleLogin(values);
+        setIsLoggingIn(true);
+        await attemptLogin(values, formikHelpers);
       } catch (error) {
-        console.error("Login error:", error);
+        logger.error("Login error", error);
+        setIsLoggingIn(false);
       }
     },
   });
@@ -119,68 +125,64 @@ const Login = () => {
 
       return "active"; // Default for non-doctors
     } catch (error) {
-      console.error("Error checking doctor status:", error);
+      logger.error("Error checking doctor status", error);
       return "active"; // Default to active on error
     }
   };
 
-  // Standard Email/Password Login
-  const handleLogin = async (values) => {
-    setLoading(true);
-
+  // Attempt to log in
+  const attemptLogin = async (values, formikHelpers) => {
+    setIsLoggingIn(true);
     try {
-      console.log("Attempting login for:", values.email);
+      setLoading(true);
+      setError("");
 
-      // Use the login function from AuthContext instead of direct Firebase call
       const result = await login(values.email, values.password);
-      console.log("Login result:", result);
-      if (result.userInfo.isPendingVerification) {
-        // pass email (and uid if you need it) to the verification page
-        navigate("/verify-email", { state: { email: values.email } });
+
+      // Handle MFA requirement
+      if (result.requiresMfa) {
+        // Show MFA verification screen
+        setShowMfaVerification(true);
+        setLoading(false);
+        formikHelpers.setSubmitting(false);
         return;
       }
-      const user = result.user;
-      const userInfo = result.userInfo;
 
-      console.log("Login successful for:", user.email);
-
-      // Check if doctor account is inactive
-      if (userInfo.role === "doctor" && userInfo.status === "inactive") {
-        toast.warning(
-          "Your doctor account is pending approval by an administrator."
-        );
-        // Still allow login but show a warning
-      }
-
-      // Redirect based on role
-      if (userInfo.role === "admin") {
-        toast.success("Admin login successful!");
-        navigate("/admin");
-      } else if (userInfo.role === "doctor") {
-        toast.success("Doctor login successful!");
-        navigate("/doctor-dashboard");
+      // If the user has not verified their email
+      if (result.userInfo.isPendingVerification) {
+        // Use the existing verification dialog
+        setVerificationEmail(values.email);
+        setVerificationDialogOpen(true);
+        setLoading(false);
+        formikHelpers.setSubmitting(false);
       } else {
-        toast.success("Login successful!");
-        navigate("/patient-dashboard");
+        logger.debug("Login successful", { role: result.userInfo.role });
+        // If everything is good, navigate to dashboard
+        if (result.userInfo.role === "admin") {
+          navigate("/admin");
+        } else if (result.userInfo.role === "doctor") {
+          navigate("/doctor-dashboard");
+        } else {
+          navigate("/patient-dashboard");
+        }
       }
     } catch (error) {
-      if (error.code === "auth/too-many-requests") {
+      logger.error("Login error", error);
+
+      // Handle specific error cases
+      if (error.code === "auth/invalid-credential") {
+        setError("Invalid email or password.");
+      } else if (error.code === "auth/user-disabled") {
+        setError("This account has been disabled.");
+      } else if (error.code === "auth/too-many-requests") {
         setTooManyRequestsError(true);
-        toast.error("Too many failed login attempts…");
-      } else if (error.code === "auth/email-not-verified") {
-        // now a clear, guaranteed code match
-        // setVerificationEmail(values.email);
-        // setVerificationDialogOpen(true);
       } else {
-        const msg =
-          error.code === "auth/wrong-password" ||
-          error.code === "auth/user-not-found"
-            ? "Invalid email or password"
-            : error.message;
-        toast.error("Invalid email or password");
+        setError("Failed to log in. Please try again.");
       }
     } finally {
       setLoading(false);
+      formikHelpers.setSubmitting(false);
+      setIsLoggingIn(false);
     }
   };
 
@@ -215,7 +217,7 @@ const Login = () => {
         toast.error("Please enter your password to resend verification email");
       }
     } catch (error) {
-      console.error("Error sending verification email:", error);
+      logger.error("Error sending verification email", error);
       if (error.code === "auth/wrong-password") {
         toast.error("Incorrect password. Please try again.");
       } else {
@@ -225,6 +227,156 @@ const Login = () => {
       setVerificationSending(false);
     }
   };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      setLoading(true);
+      setError("");
+
+      const result = await login(formik.values.email, formik.values.password);
+
+      if (result.requiresMfa) {
+        // Show MFA verification screen
+        setShowMfaVerification(true);
+        setLoading(false);
+        return;
+      }
+
+      if (result.userInfo.isPendingVerification) {
+        navigate("/verify-email");
+      } else {
+        navigate("/dashboard");
+      }
+    } catch (error) {
+      logger.error("Login error", error);
+      if (error.code === "auth/invalid-credential") {
+        setError("Invalid email or password.");
+      } else if (error.code === "auth/user-disabled") {
+        setError("This account has been disabled.");
+      } else {
+        setError("Failed to log in. Please try again.");
+      }
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyMfa = async (e) => {
+    e.preventDefault();
+    try {
+      setMfaLoading(true);
+      setMfaError("");
+      setIsLoggingIn(true);
+
+      const result = await verifyMfaLogin(totpCode);
+
+      // Successful verification
+      if (result.userInfo.isPendingVerification) {
+        setVerificationEmail(result.user.email);
+        setVerificationDialogOpen(true);
+        setMfaLoading(false);
+      } else {
+        // Navigate based on role
+        if (result.userInfo.role === "admin") {
+          navigate("/admin");
+        } else if (result.userInfo.role === "doctor") {
+          navigate("/doctor-dashboard");
+        } else {
+          navigate("/patient-dashboard");
+        }
+      }
+    } catch (error) {
+      logger.error("MFA verification error", error);
+      setMfaError(
+        error.message || "Invalid verification code. Please try again."
+      );
+      setMfaLoading(false);
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleCancelMfa = async () => {
+    try {
+      await cancelMfa();
+      setShowMfaVerification(false);
+      setTotpCode("");
+      setMfaError("");
+    } catch (error) {
+      logger.error("Error cancelling MFA", error);
+    }
+  };
+
+  const handleTotpChange = (e) => {
+    // Only allow numbers and limit to 6 digits
+    const value = e.target.value.replace(/[^0-9]/g, "").slice(0, 6);
+    setTotpCode(value);
+  };
+
+  const handleClickShowPassword = () => {
+    setShowPassword(!showPassword);
+  };
+
+  // Show MFA verification screen if required
+  if (showMfaVerification || requiresMfa) {
+    return (
+      <Container maxWidth="sm" sx={{ mt: 8 }}>
+        <Paper elevation={3} sx={{ p: 4 }}>
+          <Typography variant="h4" component="h1" align="center" gutterBottom>
+            Two-Factor Authentication
+          </Typography>
+          <Typography
+            variant="body1"
+            align="center"
+            color="text.secondary"
+            sx={{ mb: 3 }}
+          >
+            Please enter the verification code from your authenticator app
+          </Typography>
+
+          {mfaError && (
+            <Alert severity="error" sx={{ mb: 3 }}>
+              {mfaError}
+            </Alert>
+          )}
+
+          <form onSubmit={handleVerifyMfa}>
+            <TextField
+              label="6-digit verification code"
+              value={totpCode}
+              onChange={handleTotpChange}
+              fullWidth
+              required
+              variant="outlined"
+              margin="normal"
+              inputProps={{ maxLength: 6 }}
+              placeholder="000000"
+              autoFocus
+            />
+
+            <Box
+              sx={{ mt: 3, display: "flex", justifyContent: "space-between" }}
+            >
+              <Button
+                variant="outlined"
+                onClick={handleCancelMfa}
+                disabled={mfaLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="contained"
+                color="primary"
+                disabled={totpCode.length !== 6 || mfaLoading}
+              >
+                {mfaLoading ? <CircularProgress size={24} /> : "Verify"}
+              </Button>
+            </Box>
+          </form>
+        </Paper>
+      </Container>
+    );
+  }
 
   return (
     <Container component="main" maxWidth="sm" sx={{ py: 4 }}>
@@ -265,7 +417,7 @@ const Login = () => {
           </Box>
 
           {/* Form */}
-          <Box component="form" onSubmit={formik.handleSubmit} noValidate>
+          <Box component="form" onSubmit={handleSubmit} noValidate>
             <Grid container spacing={2}>
               {/* Email */}
               <Grid item xs={12}>
@@ -295,7 +447,7 @@ const Login = () => {
                   fullWidth
                   name="password"
                   label="Password"
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   id="password"
                   autoComplete="current-password"
                   value={formik.values.password}
@@ -306,6 +458,19 @@ const Login = () => {
                   }
                   helperText={formik.touched.password && formik.errors.password}
                   disabled={loading}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          aria-label="toggle password visibility"
+                          onClick={handleClickShowPassword}
+                          edge="end"
+                        >
+                          {showPassword ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  }}
                 />
               </Grid>
             </Grid>
@@ -327,6 +492,12 @@ const Login = () => {
               >
                 Your account has been temporarily locked due to too many failed
                 login attempts. Please reset your password or try again later.
+              </Alert>
+            )}
+
+            {error && (
+              <Alert severity="error" sx={{ mt: 2, mb: 2 }}>
+                {error}
               </Alert>
             )}
 

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import {
   BrowserRouter as Router,
   Routes,
@@ -11,6 +11,7 @@ import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
+import "./utils/logViewer"; // Initialize logging configuration
 
 // Components
 import LandingPage from "./pages/LandingPage";
@@ -26,6 +27,7 @@ import { AuthProvider } from "./contexts/AuthContext";
 import EmailVerification from "./pages/EmailVerification";
 import ForgotPassword from "./pages/ForgotPassword";
 import PendingApproval from "./pages/PendingApproval";
+import NavigationTracker from "./utils/navigationTracker"; // Import navigation tracker
 
 // Create theme
 const theme = createTheme({
@@ -65,6 +67,7 @@ function App() {
         <LocalizationProvider dateAdapter={AdapterDateFns}>
           <Router>
             <AuthProvider>
+              <NavigationTracker />
               <Routes>
                 <Route index element={<LandingPage />} />
                 <Route path="login" element={<Login />} />

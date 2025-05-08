@@ -31,6 +31,10 @@ import {
   DialogContentText,
   DialogActions,
   Alert,
+  IconButton,
+  List,
+  ListItem,
+  ListItemText,
 } from "@mui/material";
 import {
   BarChart,
@@ -48,6 +52,7 @@ import {
   Cell,
   ComposedChart,
   Area,
+  ReferenceLine,
 } from "recharts";
 import { format, subDays, differenceInYears } from "date-fns";
 import axios from "axios";
@@ -59,6 +64,23 @@ import NavBar from "../components/NavBar";
 import { jsPDF } from "jspdf";
 import "jspdf-autotable";
 import html2canvas from "html2canvas";
+
+// Helper function to format position string for display
+const formatPosition = (position) => {
+  if (!position) return "Not specified";
+
+  const positionMap = {
+    driver: "Driver",
+    cook: "Cook",
+    chef: "Chef",
+    kitchen_helper: "Kitchen Helper",
+    truck_driver: "Truck Driver",
+    baker: "Baker",
+    food_tester: "Food Tester",
+  };
+
+  return positionMap[position.toLowerCase()] || position;
+};
 
 const HealthProfessionalDashboard = () => {
   const { currentUser } = useAuth();
@@ -85,6 +107,23 @@ const HealthProfessionalDashboard = () => {
   const [aggregateRiskTrends, setAggregateRiskTrends] = useState([]);
   const [pdfGenerating, setPdfGenerating] = useState(false);
   const [pdfError, setPdfError] = useState("");
+  const [prescriptionDialogOpen, setPrescriptionDialogOpen] = useState(false);
+  const [prescriptions, setPrescriptions] = useState([]);
+  const [prescriptionForm, setPrescriptionForm] = useState({
+    medicines: [
+      {
+        name: "",
+        dosage: "",
+        frequency: "",
+        duration: "",
+        specialInstructions: "",
+      },
+    ],
+    suggestion: "",
+  });
+  const [prescriptionLoading, setPrescriptionLoading] = useState(false);
+  const [prescriptionError, setPrescriptionError] = useState("");
+  const [prescriptionSuccess, setPrescriptionSuccess] = useState("");
 
   // Add refs for charts to be included in PDF
   const healthTrendsChartRef = useRef(null);
@@ -104,6 +143,7 @@ const HealthProfessionalDashboard = () => {
   useEffect(() => {
     if (selectedEmployee) {
       fetchEmployeeHealthData(selectedEmployee.id);
+      fetchPrescriptions(selectedEmployee.id);
     }
   }, [selectedEmployee, dateRange]);
 
@@ -283,7 +323,11 @@ const HealthProfessionalDashboard = () => {
       return false;
     }
 
-    if (filters.position !== "all" && employee.position !== filters.position) {
+    if (
+      filters.position !== "all" &&
+      (!employee.position ||
+        employee.position.toLowerCase() !== filters.position.toLowerCase())
+    ) {
       return false;
     }
 
@@ -296,7 +340,11 @@ const HealthProfessionalDashboard = () => {
     }
 
     // Filter by risk level if employee has health data
-    if (filters.riskLevel !== "all" && employee.latestHealthData?.prediction) {
+    if (
+      filters.riskLevel !== "all" &&
+      employee.latestHealthData?.prediction &&
+      employee.latestHealthData.prediction.risk_level
+    ) {
       const riskLevel =
         employee.latestHealthData.prediction.risk_level.toLowerCase();
       if (filters.riskLevel === "low" && !riskLevel.includes("low"))
@@ -305,6 +353,9 @@ const HealthProfessionalDashboard = () => {
         return false;
       if (filters.riskLevel === "high" && !riskLevel.includes("high"))
         return false;
+    } else if (filters.riskLevel !== "all") {
+      // If filtering by a specific risk level but employee has no risk level data, exclude them
+      return false;
     }
 
     return true;
@@ -343,11 +394,20 @@ const HealthProfessionalDashboard = () => {
       .map((record) => {
         // Convert risk level to numeric value for visualization
         let riskValue = 0;
-        if (record.prediction) {
-          if (record.prediction.risk_level === "Low Risk") riskValue = 1;
-          else if (record.prediction.risk_level === "Medium Risk")
+        let riskLabel = "Unknown";
+
+        if (record.prediction?.risk_level) {
+          const riskLevel = record.prediction.risk_level.toLowerCase();
+          if (riskLevel.includes("low")) {
+            riskValue = 1;
+            riskLabel = "Low Risk";
+          } else if (riskLevel.includes("medium")) {
             riskValue = 2;
-          else if (record.prediction.risk_level === "High Risk") riskValue = 3;
+            riskLabel = "Medium Risk";
+          } else if (riskLevel.includes("high")) {
+            riskValue = 3;
+            riskLabel = "High Risk";
+          }
         }
 
         return {
@@ -355,10 +415,8 @@ const HealthProfessionalDashboard = () => {
             ? format(new Date(record.timestamp), "MM/dd")
             : "Unknown",
           risk: riskValue,
-          riskLabel: record.prediction
-            ? record.prediction.risk_level
-            : "Unknown",
-          probability: record.prediction
+          riskLabel: riskLabel,
+          probability: record.prediction?.probability
             ? Math.round(record.prediction.probability * 100)
             : 0,
         };
@@ -369,6 +427,63 @@ const HealthProfessionalDashboard = () => {
   // Calculate employee age
   const calculateAge = (birthdate) => {
     return differenceInYears(new Date(), new Date(birthdate));
+  };
+
+  // Color functions for health metrics
+  const getGlucoseColor = (value) => {
+    if (!value) return "inherit";
+    if (value > 180) return "#d32f2f"; // Danger - red
+    if (value > 140) return "#ff9800"; // Warning - orange
+    if (value < 70) return "#ff9800"; // Warning - orange
+    return "#2e7d32"; // Normal - green
+  };
+
+  const getBloodPressureColor = (value) => {
+    if (!value) return "inherit";
+
+    // Check if value is a string and contains a slash
+    if (typeof value === "string" && value.includes("/")) {
+      try {
+        const [systolic, diastolic] = value
+          .split("/")
+          .map((v) => parseInt(v.trim()));
+
+        if (systolic > 140 || diastolic > 90) return "#d32f2f"; // Hypertension - red
+        if (
+          (systolic >= 130 && systolic <= 139) ||
+          (diastolic >= 80 && diastolic <= 89)
+        )
+          return "#ff9800"; // Elevated - orange
+        return "#2e7d32"; // Normal - green
+      } catch (error) {
+        console.warn("Invalid blood pressure format:", value);
+        return "inherit";
+      }
+    } else {
+      // Handle numeric values or other formats
+      const numValue = Number(value);
+      if (isNaN(numValue)) return "inherit";
+
+      if (numValue > 140) return "#d32f2f"; // Treating as systolic - red
+      if (numValue >= 130) return "#ff9800"; // Elevated - orange
+      if (numValue < 90) return "#2e7d32"; // Normal - green
+      return "#2e7d32"; // Default to normal
+    }
+  };
+
+  const getBMIColor = (value) => {
+    if (!value) return "inherit";
+    if (value > 30) return "#d32f2f"; // Obese - red
+    if (value >= 25) return "#ff9800"; // Overweight - orange
+    if (value < 18.5) return "#ff9800"; // Underweight - orange
+    return "#2e7d32"; // Normal - green
+  };
+
+  const getInsulinColor = (value) => {
+    if (!value) return "inherit";
+    if (value > 25) return "#ff9800"; // High - orange
+    if (value < 3) return "#ff9800"; // Low - orange
+    return "#2e7d32"; // Normal - green
   };
 
   // Generate PDF with aggregate data
@@ -458,32 +573,26 @@ const HealthProfessionalDashboard = () => {
 
       // Capture and add health trends chart
       if (healthTrendsChartRef.current && aggregateHealthTrends.length > 0) {
-        doc.text("Aggregate Health Metrics Trends", 105, yOffset, {
+        doc.addPage();
+        doc.text("Aggregate Health Metrics Trends", 105, 20, {
           align: "center",
         });
-        yOffset += 10;
 
         const healthTrendsCanvas = await html2canvas(
           healthTrendsChartRef.current
         );
         const healthTrendsImgData = healthTrendsCanvas.toDataURL("image/png");
-        doc.addImage(healthTrendsImgData, "PNG", 15, yOffset, 180, 80);
-        yOffset += 90;
+        doc.addImage(healthTrendsImgData, "PNG", 15, 30, 180, 80);
       }
 
       // Add a new page for risk trends
-      doc.addPage();
-      yOffset = 20;
-
-      // Capture and add risk trends chart
       if (riskTrendsChartRef.current && aggregateRiskTrends.length > 0) {
-        doc.text("Aggregate Risk Trends", 105, yOffset, { align: "center" });
-        yOffset += 10;
+        doc.addPage();
+        doc.text("Aggregate Risk Trends", 105, 20, { align: "center" });
 
         const riskTrendsCanvas = await html2canvas(riskTrendsChartRef.current);
         const riskTrendsImgData = riskTrendsCanvas.toDataURL("image/png");
-        doc.addImage(riskTrendsImgData, "PNG", 15, yOffset, 180, 80);
-        yOffset += 90;
+        doc.addImage(riskTrendsImgData, "PNG", 15, 30, 180, 80);
       }
 
       // Add employee list
@@ -495,6 +604,7 @@ const HealthProfessionalDashboard = () => {
           employee.name,
           calculateAge(employee.birthdate),
           employee.gender,
+          formatPosition(employee.position),
           employee.latestHealthData?.timestamp
             ? format(
                 new Date(employee.latestHealthData.timestamp),
@@ -516,6 +626,7 @@ const HealthProfessionalDashboard = () => {
               "Name",
               "Age",
               "Gender",
+              "Position",
               "Last Visit",
               "Risk Level",
               "Probability",
@@ -557,6 +668,11 @@ const HealthProfessionalDashboard = () => {
       doc.text(`Age: ${calculateAge(selectedEmployee.birthdate)}`, 20, 40);
       doc.text(`Gender: ${selectedEmployee.gender}`, 20, 50);
       doc.text(`Email: ${selectedEmployee.email}`, 20, 60);
+      doc.text(
+        `Position: ${formatPosition(selectedEmployee.position)}`,
+        20,
+        70
+      );
 
       // Add date range
       doc.text(
@@ -565,10 +681,10 @@ const HealthProfessionalDashboard = () => {
           "MM/dd/yyyy"
         )}`,
         20,
-        70
+        80
       );
 
-      let yOffset = 85;
+      let yOffset = 95;
 
       // Add latest health data if available
       if (employeeHealthData.length > 0) {
@@ -582,17 +698,81 @@ const HealthProfessionalDashboard = () => {
           yOffset
         );
         yOffset += 10;
-        doc.text(`Glucose: ${latestData.Glucose} mg/dL`, 30, yOffset);
-        yOffset += 10;
-        doc.text(
-          `Blood Pressure: ${latestData.BloodPressure} mm Hg`,
-          30,
-          yOffset
+
+        // Glucose with color
+        const glucoseColor = getGlucoseColor(latestData.Glucose);
+        const glucoseText = `Glucose: ${latestData.Glucose} mg/dL`;
+
+        // First, draw white background to cover any existing text
+        doc.setFillColor(255, 255, 255);
+        const glucoseWidth = doc.getTextWidth(glucoseText);
+        doc.rect(30, yOffset - 5, glucoseWidth + 2, 10, "F");
+
+        // Then draw colored text
+        doc.setTextColor(
+          hexToRgb(glucoseColor).r,
+          hexToRgb(glucoseColor).g,
+          hexToRgb(glucoseColor).b
         );
+        doc.text(glucoseText, 30, yOffset);
+        doc.setTextColor(0, 0, 0); // Reset to black
         yOffset += 10;
-        doc.text(`Insulin: ${latestData.Insulin} μU/ml`, 30, yOffset);
+
+        // Blood Pressure with color
+        const bpColor = getBloodPressureColor(latestData.BloodPressure);
+        const bpText = `Blood Pressure: ${latestData.BloodPressure} mm Hg`;
+
+        // First, draw white background
+        doc.setFillColor(255, 255, 255);
+        const bpWidth = doc.getTextWidth(bpText);
+        doc.rect(30, yOffset - 5, bpWidth + 2, 10, "F");
+
+        // Then draw colored text
+        doc.setTextColor(
+          hexToRgb(bpColor).r,
+          hexToRgb(bpColor).g,
+          hexToRgb(bpColor).b
+        );
+        doc.text(bpText, 30, yOffset);
+        doc.setTextColor(0, 0, 0); // Reset to black
         yOffset += 10;
-        doc.text(`BMI: ${latestData.BMI} kg/m²`, 30, yOffset);
+
+        // Insulin with color
+        const insulinColor = getInsulinColor(latestData.Insulin);
+        const insulinText = `Insulin: ${latestData.Insulin} μU/ml`;
+
+        // First, draw white background
+        doc.setFillColor(255, 255, 255);
+        const insulinWidth = doc.getTextWidth(insulinText);
+        doc.rect(30, yOffset - 5, insulinWidth + 2, 10, "F");
+
+        // Then draw colored text
+        doc.setTextColor(
+          hexToRgb(insulinColor).r,
+          hexToRgb(insulinColor).g,
+          hexToRgb(insulinColor).b
+        );
+        doc.text(insulinText, 30, yOffset);
+        doc.setTextColor(0, 0, 0); // Reset to black
+        yOffset += 10;
+
+        // BMI with color
+        const bmiColor = getBMIColor(latestData.BMI);
+        const bmiText = `BMI: ${latestData.BMI} kg/m²`;
+
+        // First, draw white background
+        doc.setFillColor(255, 255, 255);
+        const bmiWidth = doc.getTextWidth(bmiText);
+        doc.rect(30, yOffset - 5, bmiWidth + 2, 10, "F");
+
+        // Then draw colored text
+        doc.setTextColor(
+          hexToRgb(bmiColor).r,
+          hexToRgb(bmiColor).g,
+          hexToRgb(bmiColor).b
+        );
+        doc.text(bmiText, 30, yOffset);
+        doc.setTextColor(0, 0, 0); // Reset to black
         yOffset += 10;
 
         // Add latest prediction if available
@@ -600,11 +780,32 @@ const HealthProfessionalDashboard = () => {
           yOffset += 5;
           doc.text("Latest Prediction:", 20, yOffset);
           yOffset += 10;
-          doc.text(
-            `Risk Level: ${latestData.prediction.risk_level}`,
-            30,
-            yOffset
+
+          // Set risk level color
+          const riskColor = latestData.prediction.risk_level
+            .toLowerCase()
+            .includes("low")
+            ? "#4CAF50"
+            : latestData.prediction.risk_level.toLowerCase().includes("medium")
+            ? "#FF9800"
+            : "#F44336";
+
+          // Save original background color
+          const riskLevelText = `Risk Level: ${latestData.prediction.risk_level}`;
+
+          // First, draw white background to cover any existing text
+          doc.setFillColor(255, 255, 255);
+          const textWidth = doc.getTextWidth(riskLevelText);
+          doc.rect(30, yOffset - 5, textWidth + 2, 10, "F");
+
+          // Then draw colored text
+          doc.setTextColor(
+            hexToRgb(riskColor).r,
+            hexToRgb(riskColor).g,
+            hexToRgb(riskColor).b
           );
+          doc.text(riskLevelText, 30, yOffset);
+          doc.setTextColor(0, 0, 0); // Reset to black
           yOffset += 10;
           doc.text(
             `Probability: ${(latestData.prediction.probability * 100).toFixed(
@@ -616,21 +817,7 @@ const HealthProfessionalDashboard = () => {
           yOffset += 15;
         }
 
-        // Add a table with historical data
-        const tableData = employeeHealthData.map((record) => [
-          record.timestamp
-            ? format(new Date(record.timestamp), "MM/dd/yyyy")
-            : "N/A",
-          record.Glucose,
-          record.BloodPressure,
-          record.BMI,
-          record.Insulin,
-          record.prediction?.risk_level || "N/A",
-          record.prediction
-            ? `${(record.prediction.probability * 100).toFixed(1)}%`
-            : "N/A",
-        ]);
-
+        // Add a table with historical data with colored values
         doc.autoTable({
           startY: yOffset,
           head: [
@@ -644,7 +831,81 @@ const HealthProfessionalDashboard = () => {
               "Probability",
             ],
           ],
-          body: tableData,
+          body: employeeHealthData.map((record) => [
+            record.timestamp
+              ? format(new Date(record.timestamp), "MM/dd/yyyy")
+              : "N/A",
+            record.Glucose,
+            record.BloodPressure,
+            record.BMI,
+            record.Insulin,
+            record.prediction?.risk_level || "N/A",
+            record.prediction
+              ? `${(record.prediction.probability * 100).toFixed(1)}%`
+              : "N/A",
+          ]),
+          didDrawCell: (data) => {
+            // Check if it's a body cell (not header) and we need to color it
+            if (data.section === "body") {
+              const rowIndex = data.row.index;
+              const colIndex = data.column.index;
+              const record = employeeHealthData[rowIndex];
+
+              // If record exists
+              if (record) {
+                let color = "#000000"; // Default black color
+
+                // Set color based on column
+                if (colIndex === 1 && record.Glucose) {
+                  // Glucose column
+                  color = getGlucoseColor(record.Glucose);
+                } else if (colIndex === 2 && record.BloodPressure) {
+                  // BP column
+                  color = getBloodPressureColor(record.BloodPressure);
+                } else if (colIndex === 3 && record.BMI) {
+                  // BMI column
+                  color = getBMIColor(record.BMI);
+                } else if (colIndex === 4 && record.Insulin) {
+                  // Insulin column
+                  color = getInsulinColor(record.Insulin);
+                } else if (colIndex === 5 && record.prediction?.risk_level) {
+                  // Risk Level column
+                  color = record.prediction.risk_level
+                    .toLowerCase()
+                    .includes("low")
+                    ? "#4CAF50"
+                    : record.prediction.risk_level
+                        .toLowerCase()
+                        .includes("medium")
+                    ? "#FF9800"
+                    : "#F44336";
+                }
+
+                // Only modify if we need to change color from default
+                if (color !== "#000000" && color !== "inherit") {
+                  // First, clear the existing text by drawing a white rectangle over the cell
+                  doc.setFillColor(255, 255, 255);
+                  doc.rect(
+                    data.cell.x,
+                    data.cell.y,
+                    data.cell.width,
+                    data.cell.height,
+                    "F"
+                  );
+
+                  // Now draw the colored text
+                  const rgb = hexToRgb(color);
+                  doc.setTextColor(rgb.r, rgb.g, rgb.b);
+                  doc.text(
+                    data.cell.text,
+                    data.cell.x + data.cell.padding("left"),
+                    data.cell.y + data.cell.height / 2 + 1
+                  );
+                  doc.setTextColor(0, 0, 0); // Reset to black
+                }
+              }
+            }
+          },
         });
 
         // Add a new page for charts
@@ -656,15 +917,14 @@ const HealthProfessionalDashboard = () => {
           patientHealthTrendsChartRef.current &&
           employeeHealthData.length > 1
         ) {
-          doc.text("Health Metrics Trends", 105, yOffset, { align: "center" });
-          yOffset += 10;
+          doc.addPage();
+          doc.text("Health Metrics Trends", 105, 20, { align: "center" });
 
           const healthTrendsCanvas = await html2canvas(
             patientHealthTrendsChartRef.current
           );
           const healthTrendsImgData = healthTrendsCanvas.toDataURL("image/png");
-          doc.addImage(healthTrendsImgData, "PNG", 15, yOffset, 180, 80);
-          yOffset += 90;
+          doc.addImage(healthTrendsImgData, "PNG", 15, 30, 180, 80);
         }
 
         // Add risk trends chart if there are at least 2 data points
@@ -672,14 +932,14 @@ const HealthProfessionalDashboard = () => {
           patientRiskTrendsChartRef.current &&
           employeeHealthData.length > 1
         ) {
-          doc.text("Risk Prediction Trend", 105, yOffset, { align: "center" });
-          yOffset += 10;
+          doc.addPage();
+          doc.text("Risk Prediction Trend", 105, 20, { align: "center" });
 
           const riskTrendsCanvas = await html2canvas(
             patientRiskTrendsChartRef.current
           );
           const riskTrendsImgData = riskTrendsCanvas.toDataURL("image/png");
-          doc.addImage(riskTrendsImgData, "PNG", 15, yOffset, 180, 80);
+          doc.addImage(riskTrendsImgData, "PNG", 15, 30, 180, 80);
         }
       } else {
         doc.text("No health data available for this employee.", 20, yOffset);
@@ -697,6 +957,151 @@ const HealthProfessionalDashboard = () => {
       setPdfError("Failed to generate PDF report. Please try again.");
     } finally {
       setPdfGenerating(false);
+    }
+  };
+
+  // Helper function to convert hex color to RGB
+  const hexToRgb = (hex) => {
+    // Default to black if hex is inherit or undefined
+    if (!hex || hex === "inherit") return { r: 0, g: 0, b: 0 };
+
+    // Remove the # if present
+    hex = hex.replace("#", "");
+
+    // Convert 3-digit hex to 6-digit
+    if (hex.length === 3) {
+      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    }
+
+    return {
+      r: parseInt(hex.substring(0, 2), 16),
+      g: parseInt(hex.substring(2, 4), 16),
+      b: parseInt(hex.substring(4, 6), 16),
+    };
+  };
+
+  // Fetch prescriptions for the selected employee
+  const fetchPrescriptions = async (employeeId) => {
+    try {
+      const token = await currentUser.getIdToken();
+
+      console.log("Fetching prescriptions for employee:", employeeId);
+
+      const response = await axios.get(
+        `${process.env.REACT_APP_API_URL}/health/patients/${employeeId}/prescriptions`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      console.log("Prescriptions API response:", response.data);
+      setPrescriptions(response.data);
+    } catch (error) {
+      console.error("Error fetching prescriptions:", error);
+      console.error("Error details:", error.response?.data || error.message);
+    }
+  };
+
+  const handlePrescriptionDialogOpen = () => {
+    setPrescriptionDialogOpen(true);
+    setPrescriptionError("");
+    setPrescriptionSuccess("");
+  };
+
+  const handlePrescriptionDialogClose = () => {
+    setPrescriptionDialogOpen(false);
+  };
+
+  const handlePrescriptionChange = (e) => {
+    const { name, value } = e.target;
+    setPrescriptionForm({
+      ...prescriptionForm,
+      [name]: value,
+    });
+  };
+
+  const handleMedicineChange = (index, field, value) => {
+    const updatedMedicines = [...prescriptionForm.medicines];
+    updatedMedicines[index][field] = value;
+    setPrescriptionForm({
+      ...prescriptionForm,
+      medicines: updatedMedicines,
+    });
+  };
+
+  const addMedicine = () => {
+    setPrescriptionForm({
+      ...prescriptionForm,
+      medicines: [
+        ...prescriptionForm.medicines,
+        {
+          name: "",
+          dosage: "",
+          frequency: "",
+          duration: "",
+          specialInstructions: "",
+        },
+      ],
+    });
+  };
+
+  const removeMedicine = (index) => {
+    const updatedMedicines = [...prescriptionForm.medicines];
+    updatedMedicines.splice(index, 1);
+    setPrescriptionForm({
+      ...prescriptionForm,
+      medicines: updatedMedicines,
+    });
+  };
+
+  const submitPrescription = async () => {
+    if (!selectedEmployee) return;
+
+    try {
+      setPrescriptionLoading(true);
+      setPrescriptionError("");
+
+      const token = await currentUser.getIdToken();
+
+      await axios.post(
+        `${process.env.REACT_APP_API_URL}/health/patients/${selectedEmployee.id}/prescription`,
+        prescriptionForm,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setPrescriptionSuccess("Prescription added successfully");
+
+      // Reset form after successful submission
+      setPrescriptionForm({
+        medicines: [
+          {
+            name: "",
+            dosage: "",
+            frequency: "",
+            duration: "",
+            specialInstructions: "",
+          },
+        ],
+        suggestion: "",
+      });
+
+      // Add a small delay to ensure the serverTimestamp in Firestore is properly set
+      console.log("Waiting before fetching updated prescriptions...");
+      setTimeout(() => {
+        console.log("Fetching prescriptions after submission...");
+        fetchPrescriptions(selectedEmployee.id);
+
+        // Close dialog after short delay
+        setTimeout(() => {
+          setPrescriptionDialogOpen(false);
+          setPrescriptionSuccess("");
+        }, 1500);
+      }, 1000);
+    } catch (error) {
+      console.error("Error submitting prescription:", error);
+      setPrescriptionError("Failed to add prescription. Please try again.");
+    } finally {
+      setPrescriptionLoading(false);
     }
   };
 
@@ -770,14 +1175,28 @@ const HealthProfessionalDashboard = () => {
                   </Typography>
                 </Box>
               </Box>
-              <Button
-                variant="contained"
-                color="primary"
-                onClick={generateEmployeePDF}
-                disabled={pdfGenerating || employeeHealthData.length === 0}
-              >
-                {pdfGenerating ? <CircularProgress size={24} /> : "Export PDF"}
-              </Button>
+              <Box>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={handlePrescriptionDialogOpen}
+                  sx={{ mr: 2 }}
+                >
+                  Add Prescription
+                </Button>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={generateEmployeePDF}
+                  disabled={pdfGenerating || employeeHealthData.length === 0}
+                >
+                  {pdfGenerating ? (
+                    <CircularProgress size={24} />
+                  ) : (
+                    "Export PDF"
+                  )}
+                </Button>
+              </Box>
             </Box>
           </DialogTitle>
           <DialogContent dividers>
@@ -820,7 +1239,15 @@ const HealthProfessionalDashboard = () => {
                                 </Typography>
                               </Grid>
                               <Grid item xs={6}>
-                                <Typography variant="body1" align="right">
+                                <Typography
+                                  variant="body1"
+                                  align="right"
+                                  sx={{
+                                    color: getGlucoseColor(
+                                      employeeHealthData[0].Glucose
+                                    ),
+                                  }}
+                                >
                                   {employeeHealthData[0].Glucose} mg/dL
                                 </Typography>
                               </Grid>
@@ -833,7 +1260,15 @@ const HealthProfessionalDashboard = () => {
                                 </Typography>
                               </Grid>
                               <Grid item xs={6}>
-                                <Typography variant="body1" align="right">
+                                <Typography
+                                  variant="body1"
+                                  align="right"
+                                  sx={{
+                                    color: getBloodPressureColor(
+                                      employeeHealthData[0].BloodPressure
+                                    ),
+                                  }}
+                                >
                                   {employeeHealthData[0].BloodPressure} mm Hg
                                 </Typography>
                               </Grid>
@@ -846,7 +1281,15 @@ const HealthProfessionalDashboard = () => {
                                 </Typography>
                               </Grid>
                               <Grid item xs={6}>
-                                <Typography variant="body1" align="right">
+                                <Typography
+                                  variant="body1"
+                                  align="right"
+                                  sx={{
+                                    color: getInsulinColor(
+                                      employeeHealthData[0].Insulin
+                                    ),
+                                  }}
+                                >
                                   {employeeHealthData[0].Insulin} μU/ml
                                 </Typography>
                               </Grid>
@@ -859,7 +1302,15 @@ const HealthProfessionalDashboard = () => {
                                 </Typography>
                               </Grid>
                               <Grid item xs={6}>
-                                <Typography variant="body1" align="right">
+                                <Typography
+                                  variant="body1"
+                                  align="right"
+                                  sx={{
+                                    color: getBMIColor(
+                                      employeeHealthData[0].BMI
+                                    ),
+                                  }}
+                                >
                                   {employeeHealthData[0].BMI} kg/m²
                                 </Typography>
                               </Grid>
@@ -881,7 +1332,7 @@ const HealthProfessionalDashboard = () => {
                         Latest Prediction
                       </Typography>
                       {employeeHealthData.length > 0 &&
-                      employeeHealthData[0].prediction ? (
+                      employeeHealthData[0]?.prediction?.risk_level ? (
                         <>
                           <Box
                             sx={{
@@ -895,11 +1346,13 @@ const HealthProfessionalDashboard = () => {
                                 employeeHealthData[0].prediction.risk_level
                               }
                               color={
-                                employeeHealthData[0].prediction.risk_level ===
-                                "Low Risk"
+                                employeeHealthData[0].prediction.risk_level
+                                  .toLowerCase()
+                                  .includes("low")
                                   ? "success"
-                                  : employeeHealthData[0].prediction
-                                      .risk_level === "Medium Risk"
+                                  : employeeHealthData[0].prediction.risk_level
+                                      .toLowerCase()
+                                      .includes("medium")
                                   ? "warning"
                                   : "error"
                               }
@@ -950,16 +1403,6 @@ const HealthProfessionalDashboard = () => {
                             {selectedEmployee.email}
                           </Typography>
                         </Grid>
-                        {/* <Grid item xs={4}>
-                          <Typography variant="body2" color="text.secondary">
-                            Phone:
-                          </Typography>
-                        </Grid> */}
-                        {/* <Grid item xs={8}>
-                          <Typography variant="body2">
-                            {selectedEmployee.phone || "Not provided"}
-                          </Typography>
-                        </Grid> */}
                         <Grid item xs={4}>
                           <Typography variant="body2" color="text.secondary">
                             Birthdate:
@@ -973,7 +1416,134 @@ const HealthProfessionalDashboard = () => {
                             )}
                           </Typography>
                         </Grid>
+                        <Grid item xs={4}>
+                          <Typography variant="body2" color="text.secondary">
+                            Position:
+                          </Typography>
+                        </Grid>
+                        <Grid item xs={8}>
+                          <Typography variant="body2">
+                            {formatPosition(selectedEmployee.position)}
+                          </Typography>
+                        </Grid>
                       </Grid>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12}>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom>
+                        Prescriptions & Suggestions
+                      </Typography>
+                      {prescriptions.length > 0 ? (
+                        <List>
+                          {prescriptions.map((prescription) => (
+                            <React.Fragment key={prescription.id}>
+                              <ListItem alignItems="flex-start">
+                                <ListItemText
+                                  primary={
+                                    <Typography variant="subtitle1">
+                                      {format(
+                                        new Date(prescription.timestamp),
+                                        "MMMM dd, yyyy"
+                                      )}
+                                    </Typography>
+                                  }
+                                  secondary={
+                                    <>
+                                      {prescription.suggestion && (
+                                        <Box sx={{ mt: 1, mb: 2 }}>
+                                          <Typography
+                                            variant="subtitle2"
+                                            component="span"
+                                            color="primary"
+                                          >
+                                            Suggestion:
+                                          </Typography>
+                                          <Typography
+                                            variant="body2"
+                                            component="p"
+                                            sx={{ mt: 0.5 }}
+                                          >
+                                            {prescription.suggestion}
+                                          </Typography>
+                                        </Box>
+                                      )}
+
+                                      <Typography
+                                        variant="subtitle2"
+                                        component="span"
+                                        color="primary"
+                                      >
+                                        Medicines:
+                                      </Typography>
+
+                                      {prescription.medicines.map(
+                                        (medicine, index) => (
+                                          <Box
+                                            key={index}
+                                            sx={{ mt: 1, ml: 2, mb: 1 }}
+                                          >
+                                            <Typography
+                                              variant="body2"
+                                              component="p"
+                                              fontWeight="bold"
+                                            >
+                                              {medicine.name}
+                                            </Typography>
+                                            <Typography
+                                              variant="body2"
+                                              component="p"
+                                            >
+                                              Dosage: {medicine.dosage} |
+                                              Frequency: {medicine.frequency} |
+                                              Duration: {medicine.duration}
+                                            </Typography>
+                                            {medicine.specialInstructions && (
+                                              <Typography
+                                                variant="body2"
+                                                component="p"
+                                                color="text.secondary"
+                                              >
+                                                Special instructions:{" "}
+                                                {medicine.specialInstructions}
+                                              </Typography>
+                                            )}
+                                          </Box>
+                                        )
+                                      )}
+                                    </>
+                                  }
+                                />
+                              </ListItem>
+                              <Divider />
+                            </React.Fragment>
+                          ))}
+                        </List>
+                      ) : (
+                        <Box>
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            sx={{ py: 2 }}
+                          >
+                            No prescriptions or suggestions have been given yet.
+                          </Typography>
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            sx={{ mt: 1 }}
+                            onClick={() => {
+                              if (selectedEmployee) {
+                                fetchPrescriptions(selectedEmployee.id);
+                              }
+                            }}
+                          >
+                            Refresh Prescriptions
+                          </Button>
+                        </Box>
+                      )}
                     </CardContent>
                   </Card>
                 </Grid>
@@ -1110,7 +1680,7 @@ const HealthProfessionalDashboard = () => {
                             height={250}
                             ref={patientRiskTrendsChartRef}
                           >
-                            <ComposedChart
+                            <LineChart
                               data={getRiskTrendData()}
                               margin={{
                                 top: 5,
@@ -1122,68 +1692,53 @@ const HealthProfessionalDashboard = () => {
                               <CartesianGrid strokeDasharray="3 3" />
                               <XAxis dataKey="date" />
                               <YAxis
-                                yAxisId="risk"
-                                domain={[0, 3]}
-                                ticks={[0, 1, 2, 3]}
-                                tickFormatter={(value) => {
-                                  if (value === 1) return "Low";
-                                  if (value === 2) return "Medium";
-                                  if (value === 3) return "High";
-                                  return "";
-                                }}
-                              />
-                              <YAxis
-                                yAxisId="probability"
-                                orientation="right"
                                 domain={[0, 100]}
+                                tickFormatter={(value) => `${value}%`}
                               />
                               <Tooltip
-                                formatter={(value, name) => {
-                                  if (name === "Risk Level") {
-                                    if (value === 1) return ["Low Risk", name];
-                                    if (value === 2)
-                                      return ["Medium Risk", name];
-                                    if (value === 3) return ["High Risk", name];
-                                    return ["Unknown", name];
-                                  }
-                                  if (name === "Probability") {
-                                    return [`${value}%`, name];
-                                  }
-                                  return [value, name];
-                                }}
+                                formatter={(value, name) => [
+                                  `${value.toFixed(2)}%`,
+                                  "Diabetes Risk",
+                                ]}
+                                labelFormatter={(label) => `Date: ${label}`}
                               />
                               <Legend />
-                              <Bar
-                                dataKey="risk"
-                                name="Risk Level"
-                                yAxisId="risk"
-                                fill="#8884d8"
-                                radius={[4, 4, 0, 0]}
-                              >
-                                {getRiskTrendData().map((entry, index) => (
-                                  <Cell
-                                    key={`cell-${index}`}
-                                    fill={
-                                      entry.risk === 1
-                                        ? "#4CAF50" // Low - green
-                                        : entry.risk === 2
-                                        ? "#FF9800" // Medium - orange
-                                        : entry.risk === 3
-                                        ? "#F44336" // High - red
-                                        : "#9E9E9E" // Unknown - gray
-                                    }
-                                  />
-                                ))}
-                              </Bar>
                               <Line
                                 type="monotone"
                                 dataKey="probability"
-                                name="Probability"
-                                yAxisId="probability"
-                                stroke="#FF5722"
-                                dot={{ r: 5 }}
+                                name="Diabetes Risk"
+                                stroke="#e91e63"
+                                activeDot={{ r: 8 }}
+                                strokeWidth={3}
+                                dot={{
+                                  stroke: "#e91e63",
+                                  strokeWidth: 2,
+                                  r: 4,
+                                  fill: (entry) =>
+                                    entry.riskLabel
+                                      .toLowerCase()
+                                      .includes("low")
+                                      ? "#4CAF50"
+                                      : entry.riskLabel
+                                          .toLowerCase()
+                                          .includes("medium")
+                                      ? "#FF9800"
+                                      : "#F44336",
+                                }}
                               />
-                            </ComposedChart>
+                              <ReferenceLine
+                                y={30}
+                                stroke="#4CAF50"
+                                strokeDasharray="3 3"
+                                label="Low Risk Threshold"
+                              />
+                              <ReferenceLine
+                                y={70}
+                                stroke="#F44336"
+                                strokeDasharray="3 3"
+                                label="High Risk Threshold"
+                              />
+                            </LineChart>
                           </ResponsiveContainer>
                         </>
                       ) : (
@@ -1205,6 +1760,188 @@ const HealthProfessionalDashboard = () => {
           <DialogActions>
             <Button onClick={handleCloseEmployeeDetails} color="primary">
               Close
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Prescription Dialog */}
+        <Dialog
+          open={prescriptionDialogOpen}
+          onClose={handlePrescriptionDialogClose}
+          maxWidth="md"
+          fullWidth
+        >
+          <DialogTitle>
+            Add Prescription for {selectedEmployee?.name}
+          </DialogTitle>
+          <DialogContent>
+            {prescriptionError && (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                {prescriptionError}
+              </Alert>
+            )}
+            {prescriptionSuccess && (
+              <Alert severity="success" sx={{ mb: 2 }}>
+                {prescriptionSuccess}
+              </Alert>
+            )}
+
+            <Typography variant="subtitle1" gutterBottom sx={{ mt: 2 }}>
+              Suggestion
+            </Typography>
+            <TextField
+              fullWidth
+              multiline
+              rows={3}
+              name="suggestion"
+              label="Suggestion"
+              variant="outlined"
+              value={prescriptionForm.suggestion}
+              onChange={handlePrescriptionChange}
+              placeholder="Enter any general health advice or suggestions for the patient"
+              sx={{ mb: 3 }}
+            />
+
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <Typography variant="subtitle1" gutterBottom>
+                Medicines
+              </Typography>
+              <Button
+                variant="outlined"
+                color="primary"
+                onClick={addMedicine}
+                size="small"
+              >
+                Add Medicine
+              </Button>
+            </Box>
+
+            {prescriptionForm.medicines.map((medicine, index) => (
+              <Box
+                key={index}
+                sx={{
+                  mb: 3,
+                  p: 2,
+                  border: "1px solid #e0e0e0",
+                  borderRadius: "4px",
+                }}
+              >
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    mb: 2,
+                  }}
+                >
+                  <Typography variant="subtitle2">
+                    Medicine #{index + 1}
+                  </Typography>
+                  {index > 0 && (
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      size="small"
+                      onClick={() => removeMedicine(index)}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </Box>
+
+                <Grid container spacing={2}>
+                  <Grid item xs={12}>
+                    <TextField
+                      fullWidth
+                      required
+                      label="Medicine Name"
+                      value={medicine.name}
+                      onChange={(e) =>
+                        handleMedicineChange(index, "name", e.target.value)
+                      }
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      required
+                      label="Dosage"
+                      value={medicine.dosage}
+                      onChange={(e) =>
+                        handleMedicineChange(index, "dosage", e.target.value)
+                      }
+                      placeholder="e.g., 500mg"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      required
+                      label="Frequency"
+                      value={medicine.frequency}
+                      onChange={(e) =>
+                        handleMedicineChange(index, "frequency", e.target.value)
+                      }
+                      placeholder="e.g., Twice daily"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      required
+                      label="Duration"
+                      value={medicine.duration}
+                      onChange={(e) =>
+                        handleMedicineChange(index, "duration", e.target.value)
+                      }
+                      placeholder="e.g., 7 days"
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField
+                      fullWidth
+                      label="Special Instructions"
+                      value={medicine.specialInstructions}
+                      onChange={(e) =>
+                        handleMedicineChange(
+                          index,
+                          "specialInstructions",
+                          e.target.value
+                        )
+                      }
+                      placeholder="e.g., Take after meals"
+                    />
+                  </Grid>
+                </Grid>
+              </Box>
+            ))}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handlePrescriptionDialogClose} color="primary">
+              Cancel
+            </Button>
+            <Button
+              onClick={submitPrescription}
+              color="primary"
+              variant="contained"
+              disabled={
+                prescriptionLoading ||
+                prescriptionForm.medicines.some(
+                  (m) => !m.name || !m.dosage || !m.frequency || !m.duration
+                )
+              }
+            >
+              {prescriptionLoading ? (
+                <CircularProgress size={24} />
+              ) : (
+                "Save Prescription"
+              )}
             </Button>
           </DialogActions>
         </Dialog>
@@ -1317,6 +2054,7 @@ const HealthProfessionalDashboard = () => {
                         <TableCell>Employee</TableCell>
                         <TableCell>Age</TableCell>
                         <TableCell>Gender</TableCell>
+                        <TableCell>Position</TableCell>
                         <TableCell>Last Visit</TableCell>
                         <TableCell>Risk Level</TableCell>
                         <TableCell>Actions</TableCell>
@@ -1351,6 +2089,9 @@ const HealthProfessionalDashboard = () => {
                             </TableCell>
                             <TableCell>{employee.gender}</TableCell>
                             <TableCell>
+                              {formatPosition(employee.position)}
+                            </TableCell>
+                            <TableCell>
                               {employee.latestHealthData?.timestamp
                                 ? format(
                                     new Date(
@@ -1361,18 +2102,21 @@ const HealthProfessionalDashboard = () => {
                                 : "No visits"}
                             </TableCell>
                             <TableCell>
-                              {employee.latestHealthData?.prediction ? (
+                              {employee.latestHealthData?.prediction
+                                ?.risk_level ? (
                                 <Chip
                                   label={
                                     employee.latestHealthData.prediction
                                       .risk_level
                                   }
                                   color={
-                                    employee.latestHealthData.prediction
-                                      .risk_level === "Low Risk"
+                                    employee.latestHealthData.prediction.risk_level
+                                      .toLowerCase()
+                                      .includes("low")
                                       ? "success"
-                                      : employee.latestHealthData.prediction
-                                          .risk_level === "Medium Risk"
+                                      : employee.latestHealthData.prediction.risk_level
+                                          .toLowerCase()
+                                          .includes("medium")
                                       ? "warning"
                                       : "error"
                                   }
@@ -1400,7 +2144,7 @@ const HealthProfessionalDashboard = () => {
                         ))
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={6} align="center">
+                          <TableCell colSpan={7} align="center">
                             <Typography
                               variant="body1"
                               color="text.secondary"
@@ -1681,7 +2425,7 @@ const HealthProfessionalDashboard = () => {
                         <Line
                           yAxisId="right"
                           type="monotone"
-                          dataKey="averageProbability"
+                          dataKey="avgProbability"
                           stroke="#000000"
                           name="Avg Probability"
                         />

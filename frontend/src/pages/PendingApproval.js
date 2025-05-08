@@ -58,9 +58,9 @@ const PendingApproval = () => {
           </Box>
 
           <Alert severity="info" sx={{ mb: 4 }}>
-            Thank you for registering with Diabetick. As a healthcare provider,
-            your account needs to be verified by an administrator before you can
-            access patient data.
+            Thank you for registering with Diabetes Guard. As a healthcare
+            provider, your account needs to be verified by an administrator
+            before you can access patient data.
           </Alert>
 
           <Box sx={{ mb: 4 }}>

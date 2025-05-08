@@ -13,6 +13,9 @@ import {
   Slider,
   Divider,
   Alert,
+  List,
+  ListItem,
+  ListItemText,
 } from "@mui/material";
 import {
   LineChart,
@@ -35,6 +38,8 @@ import { jsPDF } from "jspdf";
 import "jspdf-autotable";
 import NavBar from "../components/NavBar";
 import html2canvas from "html2canvas";
+import secureApi from "../utils/secureApi";
+import { getAuth } from "firebase/auth";
 
 const PatientDashboard = () => {
   const { currentUser } = useAuth();
@@ -62,6 +67,9 @@ const PatientDashboard = () => {
     BMI: 0,
   });
 
+  const [prescriptions, setPrescriptions] = useState([]);
+  const [prescriptionsLoading, setPrescriptionsLoading] = useState(false);
+
   // Add refs for the charts
   const healthMetricsChartRef = useRef(null);
   const riskTrendChartRef = useRef(null);
@@ -71,20 +79,20 @@ const PatientDashboard = () => {
       try {
         if (!currentUser) return; // Guard clause to prevent errors if currentUser is null
 
-        const token = await currentUser.getIdToken();
-
-        const response = await axios.get(
-          `${process.env.REACT_APP_API_URL}/users/profile`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          }
-        );
+        // Use secureApi instead of direct axios call
+        const response = await secureApi.get("/users/profile");
 
         const user = response.data;
+        if (!user || !user.gender || !user.birthdate) {
+          console.warn("Incomplete user data received:", user);
+          setError("Profile data is incomplete. Please update your profile.");
+          return;
+        }
+
         setUserData({
           gender: user.gender,
           birthdate: user.birthdate,
-          age: calculateAge(user.birthdate),
+          age: user.age || calculateAge(user.birthdate),
         });
 
         // If male, set pregnancies to 0 and disable the field
@@ -93,6 +101,7 @@ const PatientDashboard = () => {
         }
       } catch (error) {
         console.error("Error fetching user data:", error);
+        setError("Failed to fetch user data. Please try again later.");
       }
     };
 
@@ -100,6 +109,7 @@ const PatientDashboard = () => {
       // Only fetch data if user is logged in
       fetchUserData();
       fetchHealthData();
+      fetchPrescriptions();
     }
   }, [currentUser]);
 
@@ -124,20 +134,14 @@ const PatientDashboard = () => {
       if (!currentUser) return; // Guard clause
 
       setHistoryLoading(true);
-      const token = await currentUser.getIdToken();
 
       const params = {
         startDate: format(dateRange.startDate, "yyyy-MM-dd"),
         endDate: format(dateRange.endDate, "yyyy-MM-dd"),
       };
 
-      const response = await axios.get(
-        `${process.env.REACT_APP_API_URL}/health/data/history`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-          params,
-        }
-      );
+      // Use secure API client for retrieving health data
+      const response = await secureApi.get("/health/data/history", params);
 
       setHealthData(response.data);
     } catch (error) {
@@ -145,6 +149,32 @@ const PatientDashboard = () => {
       setError("Failed to fetch health history. Please try again later.");
     } finally {
       setHistoryLoading(false);
+    }
+  };
+
+  const fetchPrescriptions = async () => {
+    try {
+      if (!currentUser) return;
+
+      setPrescriptionsLoading(true);
+
+      const params = {
+        startDate: format(dateRange.startDate, "yyyy-MM-dd"),
+        endDate: format(dateRange.endDate, "yyyy-MM-dd"),
+      };
+
+      console.log("Fetching prescriptions with params:", params);
+
+      // Use secureApi instead of direct axios call
+      const response = await secureApi.get("/health/prescriptions", params);
+
+      console.log("Prescriptions API response:", response.data);
+      setPrescriptions(response.data);
+    } catch (error) {
+      console.error("Error fetching prescriptions:", error);
+      console.error("Error details:", error.response?.data || error.message);
+    } finally {
+      setPrescriptionsLoading(false);
     }
   };
 
@@ -171,17 +201,32 @@ const PatientDashboard = () => {
         return;
       }
 
+      // Validate required data
+      if (!userData.age) {
+        setError(
+          "Your profile is incomplete. Please update your profile with your birthdate first."
+        );
+        return;
+      }
+
       setLoading(true);
       setError("");
       setSuccess("");
 
-      const token = await currentUser.getIdToken();
+      // Make sure all values are valid numbers, not just objects with numeric properties
+      const validatedFormData = {
+        Pregnancies: Number(formData.Pregnancies),
+        Glucose: Number(formData.Glucose),
+        BloodPressure: Number(formData.BloodPressure),
+        Insulin: Number(formData.Insulin),
+        BMI: Number(formData.BMI),
+        Age: Number(userData.age), // Include the user's age from profile data
+      };
 
-      const response = await axios.post(
-        `${process.env.REACT_APP_API_URL}/health/data`,
-        formData,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      console.log("Submitting health data with age:", validatedFormData.Age);
+
+      // Use secureApi to submit the data
+      const response = await secureApi.post("/health/data", validatedFormData);
 
       setPrediction(response.data.prediction);
       setSuccess("Health data saved successfully!");
@@ -190,7 +235,15 @@ const PatientDashboard = () => {
       fetchHealthData();
     } catch (error) {
       console.error("Error submitting health data:", error);
-      setError("Failed to submit health data. Please try again.");
+      if (error.response?.data?.errors) {
+        // Show more detailed validation errors if available
+        const errorFields = error.response.data.errors
+          .map((err) => err.path)
+          .join(", ");
+        setError(`Invalid data for: ${errorFields}. Please check your inputs.`);
+      } else {
+        setError("Failed to submit health data. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -205,6 +258,7 @@ const PatientDashboard = () => {
 
   const handleFilterData = () => {
     fetchHealthData();
+    fetchPrescriptions();
   };
 
   const generatePDF = async () => {
@@ -232,7 +286,31 @@ const PatientDashboard = () => {
       let yOffset = 55;
       if (prediction) {
         doc.text("Latest Prediction:", 20, yOffset);
-        doc.text(`Risk Level: ${prediction.risk_level}`, 30, yOffset + 10);
+
+        // Set risk level color
+        const riskColor = prediction.risk_level.toLowerCase().includes("low")
+          ? "#4CAF50"
+          : prediction.risk_level.toLowerCase().includes("medium")
+          ? "#FF9800"
+          : "#F44336";
+
+        // Save the risk level text
+        const riskLevelText = `Risk Level: ${prediction.risk_level}`;
+
+        // First, draw white background to cover any existing text
+        doc.setFillColor(255, 255, 255);
+        const textWidth = doc.getTextWidth(riskLevelText);
+        doc.rect(30, yOffset + 5, textWidth + 2, 10, "F");
+
+        // Then draw colored text
+        doc.setTextColor(
+          hexToRgb(riskColor).r,
+          hexToRgb(riskColor).g,
+          hexToRgb(riskColor).b
+        );
+        doc.text(riskLevelText, 30, yOffset + 10);
+        doc.setTextColor(0, 0, 0); // Reset to black
+
         doc.text(
           `Probability: ${(prediction.probability * 100).toFixed(2)}%`,
           30,
@@ -242,11 +320,33 @@ const PatientDashboard = () => {
       } else if (healthData.length > 0 && healthData[0].prediction) {
         const latestPrediction = healthData[0].prediction;
         doc.text("Latest Prediction:", 20, yOffset);
-        doc.text(
-          `Risk Level: ${latestPrediction.risk_level}`,
-          30,
-          yOffset + 10
+
+        // Set risk level color
+        const riskColor = latestPrediction.risk_level
+          .toLowerCase()
+          .includes("low")
+          ? "#4CAF50"
+          : latestPrediction.risk_level.toLowerCase().includes("medium")
+          ? "#FF9800"
+          : "#F44336";
+
+        // Save the risk level text
+        const riskLevelText = `Risk Level: ${latestPrediction.risk_level}`;
+
+        // First, draw white background to cover any existing text
+        doc.setFillColor(255, 255, 255);
+        const textWidth = doc.getTextWidth(riskLevelText);
+        doc.rect(30, yOffset + 5, textWidth + 2, 10, "F");
+
+        // Then draw colored text
+        doc.setTextColor(
+          hexToRgb(riskColor).r,
+          hexToRgb(riskColor).g,
+          hexToRgb(riskColor).b
         );
+        doc.text(riskLevelText, 30, yOffset + 10);
+        doc.setTextColor(0, 0, 0); // Reset to black
+
         doc.text(
           `Probability: ${(latestPrediction.probability * 100).toFixed(2)}%`,
           30,
@@ -257,17 +357,7 @@ const PatientDashboard = () => {
 
       // Add table with health data
       if (healthData.length > 0) {
-        const tableData = healthData.map((record) => [
-          record.timestamp
-            ? format(new Date(record.timestamp), "MM/dd/yyyy")
-            : "N/A",
-          record.Glucose,
-          record.BloodPressure,
-          record.BMI,
-          record.Insulin,
-          record.prediction?.risk_level || "N/A",
-        ]);
-
+        // Add a table with historical data with colored values
         doc.autoTable({
           startY: yOffset,
           head: [
@@ -280,7 +370,78 @@ const PatientDashboard = () => {
               "Risk Level",
             ],
           ],
-          body: tableData,
+          body: healthData.map((record) => [
+            record.timestamp
+              ? format(new Date(record.timestamp), "MM/dd/yyyy")
+              : "N/A",
+            record.Glucose,
+            record.BloodPressure,
+            record.BMI,
+            record.Insulin,
+            record.prediction?.risk_level || "N/A",
+          ]),
+          didDrawCell: (data) => {
+            // Check if it's a body cell (not header) and we need to color it
+            if (data.section === "body") {
+              const rowIndex = data.row.index;
+              const colIndex = data.column.index;
+              const record = healthData[rowIndex];
+
+              // If record exists
+              if (record) {
+                let color = "#000000"; // Default black color
+
+                // Set color based on column
+                if (colIndex === 1 && record.Glucose) {
+                  // Glucose column
+                  color = getGlucoseColor(record.Glucose);
+                } else if (colIndex === 2 && record.BloodPressure) {
+                  // BP column
+                  color = getBloodPressureColor(record.BloodPressure);
+                } else if (colIndex === 3 && record.BMI) {
+                  // BMI column
+                  color = getBMIColor(record.BMI);
+                } else if (colIndex === 4 && record.Insulin) {
+                  // Insulin column
+                  color = getInsulinColor(record.Insulin);
+                } else if (colIndex === 5 && record.prediction?.risk_level) {
+                  // Risk Level column
+                  color = record.prediction.risk_level
+                    .toLowerCase()
+                    .includes("low")
+                    ? "#4CAF50"
+                    : record.prediction.risk_level
+                        .toLowerCase()
+                        .includes("medium")
+                    ? "#FF9800"
+                    : "#F44336";
+                }
+
+                // Only modify if we need to change color from default
+                if (color !== "#000000" && color !== "inherit") {
+                  // First, clear the existing text by drawing a white rectangle over the cell
+                  doc.setFillColor(255, 255, 255);
+                  doc.rect(
+                    data.cell.x,
+                    data.cell.y,
+                    data.cell.width,
+                    data.cell.height,
+                    "F"
+                  );
+
+                  // Now draw the colored text
+                  const rgb = hexToRgb(color);
+                  doc.setTextColor(rgb.r, rgb.g, rgb.b);
+                  doc.text(
+                    data.cell.text,
+                    data.cell.x + data.cell.padding("left"),
+                    data.cell.y + data.cell.height / 2 + 1
+                  );
+                  doc.setTextColor(0, 0, 0); // Reset to black
+                }
+              }
+            }
+          },
         });
 
         yOffset = doc.lastAutoTable.finalY + 10;
@@ -291,6 +452,8 @@ const PatientDashboard = () => {
 
       // Capture and add health metrics chart if it exists and has data
       if (healthMetricsChartRef.current && chartData.length > 0) {
+        doc.addPage();
+        yOffset = 20;
         doc.text("Health Metrics Trends", 105, yOffset, { align: "center" });
         yOffset += 10;
 
@@ -299,7 +462,6 @@ const PatientDashboard = () => {
         );
         const healthMetricsImgData = healthMetricsCanvas.toDataURL("image/png");
         doc.addImage(healthMetricsImgData, "PNG", 15, yOffset, 180, 80);
-        yOffset += 90;
       }
 
       // Capture and add risk trend chart if it exists and has data
@@ -329,51 +491,122 @@ const PatientDashboard = () => {
     }
   };
 
-  // Get colors for charts based on value ranges
+  // Helper function to convert hex color to RGB
+  const hexToRgb = (hex) => {
+    // Default to black if hex is inherit or undefined
+    if (!hex || hex === "inherit") return { r: 0, g: 0, b: 0 };
+
+    // Remove the # if present
+    hex = hex.replace("#", "");
+
+    // Convert 3-digit hex to 6-digit
+    if (hex.length === 3) {
+      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    }
+
+    return {
+      r: parseInt(hex.substring(0, 2), 16),
+      g: parseInt(hex.substring(2, 4), 16),
+      b: parseInt(hex.substring(4, 6), 16),
+    };
+  };
+
+  // Helper functions for color-coding health metrics
   const getGlucoseColor = (value) => {
-    if (value < 70) return "#3F51B5"; // Low (hypoglycemia)
-    if (value <= 99) return "#4CAF50"; // Normal
-    if (value <= 125) return "#FF9800"; // Prediabetes
-    return "#F44336"; // Diabetes
+    if (!value) return "inherit";
+    if (value > 180) return "#d32f2f"; // Danger - red
+    if (value > 140) return "#ff9800"; // Warning - orange
+    if (value < 70) return "#ff9800"; // Warning - orange
+    return "#2e7d32"; // Normal - green
+  };
+
+  const getBloodPressureColor = (value) => {
+    if (!value) return "inherit";
+
+    // Check if value is a string and contains a slash
+    if (typeof value === "string" && value.includes("/")) {
+      try {
+        const [systolic, diastolic] = value
+          .split("/")
+          .map((v) => parseInt(v.trim()));
+
+        if (systolic > 140 || diastolic > 90) return "#d32f2f"; // Hypertension - red
+        if (
+          (systolic >= 130 && systolic <= 139) ||
+          (diastolic >= 80 && diastolic <= 89)
+        )
+          return "#ff9800"; // Elevated - orange
+        return "#2e7d32"; // Normal - green
+      } catch (error) {
+        console.warn("Invalid blood pressure format:", value);
+        return "inherit";
+      }
+    } else {
+      // Handle numeric values or other formats
+      const numValue = Number(value);
+      if (isNaN(numValue)) return "inherit";
+
+      if (numValue > 140) return "#d32f2f"; // Treating as systolic - red
+      if (numValue >= 130) return "#ff9800"; // Elevated - orange
+      if (numValue < 90) return "#2e7d32"; // Normal - green
+      return "#2e7d32"; // Default to normal
+    }
   };
 
   const getBMIColor = (value) => {
-    if (value < 18.5) return "#3F51B5"; // Underweight
-    if (value < 25) return "#4CAF50"; // Normal
-    if (value < 30) return "#FF9800"; // Overweight
-    return "#F44336"; // Obese
+    if (!value) return "inherit";
+    if (value > 30) return "#d32f2f"; // Obese - red
+    if (value >= 25) return "#ff9800"; // Overweight - orange
+    if (value < 18.5) return "#ff9800"; // Underweight - orange
+    return "#2e7d32"; // Normal - green
   };
 
   const getInsulinColor = (value) => {
-    if (value < 3) return "#3F51B5"; // Low
-    if (value <= 25) return "#4CAF50"; // Normal
-    return "#F44336"; // High
-  };
-
-  const getBPColor = (value) => {
-    if (value < 90) return "#3F51B5"; // Low
-    if (value <= 120) return "#4CAF50"; // Normal
-    if (value <= 140) return "#FF9800"; // Elevated/Stage 1
-    return "#F44336"; // Stage 2 hypertension
+    if (!value) return "inherit";
+    if (value > 25) return "#ff9800"; // High - orange
+    if (value < 3) return "#ff9800"; // Low - orange
+    return "#2e7d32"; // Normal - green
   };
 
   // Chart data
   const chartData = healthData
-    .map((record) => ({
-      date: record.timestamp
-        ? format(new Date(record.timestamp), "MM/dd")
-        : "Unknown",
-      glucose: record.Glucose,
-      bmi: record.BMI,
-      insulin: record.Insulin,
-      bloodPressure: record.BloodPressure,
-      glucoseColor: getGlucoseColor(record.Glucose),
-      bmiColor: getBMIColor(record.BMI),
-      insulinColor: getInsulinColor(record.Insulin),
-      bpColor: getBPColor(record.BloodPressure),
-      diabetesRisk: record.prediction ? record.prediction.probability * 100 : 0,
-      riskLevel: record.prediction ? record.prediction.risk_level : "N/A",
-    }))
+    .map((record) => {
+      try {
+        // Skip any records missing critical fields
+        if (
+          !record ||
+          !record.Glucose ||
+          !record.BloodPressure ||
+          !record.BMI ||
+          !record.Insulin
+        ) {
+          console.warn("Skipping incomplete health record:", record?.id);
+          return null;
+        }
+
+        return {
+          date: record.timestamp
+            ? format(new Date(record.timestamp), "MM/dd")
+            : "Unknown",
+          glucose: record.Glucose || 0,
+          bmi: record.BMI || 0,
+          insulin: record.Insulin || 0,
+          bloodPressure: record.BloodPressure || 0,
+          glucoseColor: getGlucoseColor(record.Glucose || 0),
+          bmiColor: getBMIColor(record.BMI || 0),
+          insulinColor: getInsulinColor(record.Insulin || 0),
+          bpColor: getBloodPressureColor(record.BloodPressure || ""),
+          diabetesRisk: record.prediction
+            ? record.prediction.probability * 100
+            : 0,
+          riskLevel: record.prediction ? record.prediction.risk_level : "N/A",
+        };
+      } catch (error) {
+        console.error("Error processing health record for chart:", error);
+        return null;
+      }
+    })
+    .filter(Boolean) // Remove any null items
     .reverse();
 
   // Function to get color for risk level
@@ -480,10 +713,10 @@ const PatientDashboard = () => {
                       valueLabelDisplay="auto"
                       sx={{
                         "& .MuiSlider-thumb": {
-                          color: getBPColor(formData.BloodPressure),
+                          color: getBloodPressureColor(formData.BloodPressure),
                         },
                         "& .MuiSlider-track": {
-                          color: getBPColor(formData.BloodPressure),
+                          color: getBloodPressureColor(formData.BloodPressure),
                         },
                       }}
                     />
@@ -771,7 +1004,14 @@ const PatientDashboard = () => {
                           </Grid>
                           <Grid item xs={4}>
                             <Typography variant="body2">
-                              Glucose: {record.Glucose}
+                              Glucose:{" "}
+                              <span
+                                style={{
+                                  color: getGlucoseColor(record.Glucose),
+                                }}
+                              >
+                                {record.Glucose}
+                              </span>
                             </Typography>
                           </Grid>
                           <Grid item xs={4}>
@@ -969,6 +1209,142 @@ const PatientDashboard = () => {
                   <Typography variant="body1" color="text.secondary">
                     No data available to display risk trends
                   </Typography>
+                </Box>
+              )}
+            </Paper>
+          </Grid>
+
+          {/* Prescriptions & Suggestions */}
+          <Grid item xs={12}>
+            <Paper
+              sx={{
+                p: 2,
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <Typography variant="h6" gutterBottom component="div">
+                Prescriptions & Suggestions
+              </Typography>
+              <Divider sx={{ mb: 2 }} />
+
+              {prescriptionsLoading ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+                  <CircularProgress />
+                </Box>
+              ) : prescriptions.length > 0 ? (
+                <List>
+                  {prescriptions.map((prescription) => (
+                    <React.Fragment key={prescription.id}>
+                      <ListItem alignItems="flex-start">
+                        <ListItemText
+                          primary={
+                            <Box
+                              sx={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                              }}
+                            >
+                              <Typography variant="subtitle1">
+                                {format(
+                                  new Date(prescription.timestamp),
+                                  "MMMM dd, yyyy"
+                                )}
+                              </Typography>
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                Dr. {prescription.doctorName}
+                              </Typography>
+                            </Box>
+                          }
+                          secondary={
+                            <>
+                              {prescription.suggestion && (
+                                <Box sx={{ mt: 1, mb: 2 }}>
+                                  <Typography
+                                    variant="subtitle2"
+                                    component="span"
+                                    color="primary"
+                                  >
+                                    Suggestion:
+                                  </Typography>
+                                  <Typography
+                                    variant="body2"
+                                    component="p"
+                                    sx={{ mt: 0.5 }}
+                                  >
+                                    {prescription.suggestion}
+                                  </Typography>
+                                </Box>
+                              )}
+
+                              <Typography
+                                variant="subtitle2"
+                                component="span"
+                                color="primary"
+                              >
+                                Medicines:
+                              </Typography>
+
+                              {prescription.medicines.map((medicine, index) => (
+                                <Box key={index} sx={{ mt: 1, ml: 2, mb: 1 }}>
+                                  <Typography
+                                    variant="body2"
+                                    component="p"
+                                    fontWeight="bold"
+                                  >
+                                    {medicine.name}
+                                  </Typography>
+                                  <Typography variant="body2" component="p">
+                                    Dosage: {medicine.dosage} | Frequency:{" "}
+                                    {medicine.frequency} | Duration:{" "}
+                                    {medicine.duration}
+                                  </Typography>
+                                  {medicine.specialInstructions && (
+                                    <Typography
+                                      variant="body2"
+                                      component="p"
+                                      color="text.secondary"
+                                    >
+                                      Special instructions:{" "}
+                                      {medicine.specialInstructions}
+                                    </Typography>
+                                  )}
+                                </Box>
+                              ))}
+                            </>
+                          }
+                        />
+                      </ListItem>
+                      <Divider />
+                    </React.Fragment>
+                  ))}
+                </List>
+              ) : (
+                <Box
+                  sx={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                  }}
+                >
+                  <Typography
+                    variant="body1"
+                    color="text.secondary"
+                    sx={{ py: 2, textAlign: "center" }}
+                  >
+                    No prescriptions or suggestions have been given yet.
+                  </Typography>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    onClick={fetchPrescriptions}
+                    sx={{ mt: 1 }}
+                  >
+                    Refresh Prescriptions
+                  </Button>
                 </Box>
               )}
             </Paper>

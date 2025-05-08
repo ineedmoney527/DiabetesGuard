@@ -50,7 +50,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { styled } from "@mui/material/styles";
 
 // API URL
-const API_URL = process.env.REACT_APP_API_URL || "http://localhost:3000/api";
+const API_URL = process.env.REACT_APP_API_URL || "http://localhost:3000";
 
 // Admin credentials from environment variables
 const ADMIN_EMAIL =
