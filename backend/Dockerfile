@@ -1,5 +1,5 @@
 # Dockerfile
-FROM node:14
+FROM node:16
 ENV HOST 0.0.0.0
 WORKDIR /app
 COPY package*.json ./
