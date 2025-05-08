@@ -1,7 +1,42 @@
 const express = require("express");
 const router = express.Router();
 const admin = require("firebase-admin");
-const { verifyToken, isAdmin, isDoctor } = require("../middleware/auth");
+const { encrypt, decrypt } = require("../utils/encryption");
+const {
+  verifyToken,
+  isAdmin,
+  isDoctor,
+  verifyMfaIfEnabled,
+} = require("../middleware/auth");
+const { logger } = require("../utils/logger");
+
+// Helper function to encrypt sensitive user data
+const encryptUserData = (userData) => {
+  const sensitiveData = {
+    name: userData.name,
+    birthdate: userData.birthdate,
+    gender: userData.gender,
+    position: userData.position || null,
+    phone: userData.phone || null,
+    address: userData.address || null,
+  };
+
+  // Save in encrypted form
+  return encrypt(sensitiveData);
+};
+
+// Helper function to decrypt user data
+const decryptUserData = (encryptedData, baseUserData) => {
+  try {
+    if (!encryptedData) return baseUserData;
+
+    const decryptedData = decrypt(encryptedData);
+    return { ...baseUserData, ...decryptedData };
+  } catch (error) {
+    console.error("Error decrypting user data:", error);
+    return baseUserData;
+  }
+};
 
 // Middleware to verify admin role
 const verifyAdmin = async (req, res, next) => {
@@ -38,10 +73,20 @@ router.get("/", verifyAdmin, async (req, res) => {
     const users = [];
 
     usersSnapshot.forEach((doc) => {
-      users.push({
-        id: doc.id,
-        ...doc.data(),
-      });
+      const userData = doc.data();
+      let userDataDecrypted = { id: doc.id, ...userData };
+
+      // Decrypt sensitive data if present
+      if (userData.sensitiveData) {
+        userDataDecrypted = decryptUserData(
+          userData.sensitiveData,
+          userDataDecrypted
+        );
+        // Remove encrypted data from response
+        delete userDataDecrypted.sensitiveData;
+      }
+
+      users.push(userDataDecrypted);
     });
 
     res.json(users);
@@ -74,13 +119,31 @@ router.post("/approve-doctor/:userId", verifyAdmin, async (req, res) => {
       status: "active",
     });
 
+    // Decrypt sensitive data to get the user's name
+    let userName = "Unknown";
+    if (userData.sensitiveData) {
+      try {
+        const decryptedData = decrypt(userData.sensitiveData);
+        userName = decryptedData.name || "Unknown";
+      } catch (decryptError) {
+        console.error("Error decrypting user data:", decryptError);
+      }
+    }
+
     // Add to action history
     await admin.firestore().collection("adminActions").add({
       userId,
-      userName: userData.name,
+      userName,
       action: "approved",
       adminId: req.user.uid,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Log admin action
+    logger.userAction(req.user.uid, "approve_doctor", {
+      doctorId: userId,
+      doctorName: userName,
+      requestId: req.requestId,
     });
 
     res.json({ message: "Doctor account approved successfully" });
@@ -108,6 +171,17 @@ router.delete("/:userId", verifyAdmin, async (req, res) => {
 
     const userData = userDoc.data();
 
+    // Decrypt sensitive data to get the user's name
+    let userName = "Unknown";
+    if (userData.sensitiveData) {
+      try {
+        const decryptedData = decrypt(userData.sensitiveData);
+        userName = decryptedData.name || "Unknown";
+      } catch (decryptError) {
+        console.error("Error decrypting user data:", decryptError);
+      }
+    }
+
     // Delete from Firebase Auth
     await admin.auth().deleteUser(userId);
 
@@ -117,10 +191,18 @@ router.delete("/:userId", verifyAdmin, async (req, res) => {
     // Add to action history
     await admin.firestore().collection("adminActions").add({
       userId,
-      userName: userData.name,
+      userName,
       action: "deleted",
       adminId: req.user.uid,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Log admin action
+    logger.userAction(req.user.uid, "delete_user", {
+      deletedUserId: userId,
+      deletedUserName: userName,
+      deletedUserRole: userData.role,
+      requestId: req.requestId,
     });
 
     res.json({ message: "User deleted successfully" });
@@ -131,7 +213,7 @@ router.delete("/:userId", verifyAdmin, async (req, res) => {
 });
 
 // Get user profile
-router.get("/profile", verifyToken, async (req, res) => {
+router.get("/profile", verifyToken, verifyMfaIfEnabled, async (req, res) => {
   try {
     const userId = req.user.uid;
 
@@ -146,24 +228,34 @@ router.get("/profile", verifyToken, async (req, res) => {
     }
 
     const userData = userDoc.data();
-
-    // Calculate age from birthdate
-    const birthdate = new Date(userData.birthdate);
-    const age = Math.floor(
-      (new Date() - birthdate) / (365.25 * 24 * 60 * 60 * 1000)
-    );
-
-    // Return user profile data
-    res.status(200).json({
+    let userProfile = {
       id: userId,
       email: userData.email,
-      name: userData.name,
-      birthdate: userData.birthdate,
-      gender: userData.gender,
       role: userData.role,
       status: userData.status || "active",
-      age: age,
+    };
+
+    // Decrypt sensitive data if present
+    if (userData.sensitiveData) {
+      userProfile = decryptUserData(userData.sensitiveData, userProfile);
+    }
+
+    // Calculate age from birthdate
+    if (userProfile.birthdate) {
+      const birthdate = new Date(userProfile.birthdate);
+      const age = Math.floor(
+        (new Date() - birthdate) / (365.25 * 24 * 60 * 60 * 1000)
+      );
+      userProfile.age = age;
+    }
+
+    // Log profile view
+    logger.userAction(userId, "view_profile", {
+      requestId: req.requestId,
     });
+
+    // Return user profile data
+    res.status(200).json(userProfile);
   } catch (error) {
     console.error("Error fetching user profile:", error);
     res.status(500).json({ message: "Error fetching user profile" });
@@ -171,10 +263,18 @@ router.get("/profile", verifyToken, async (req, res) => {
 });
 
 // Update user profile
-router.put("/profile", verifyToken, async (req, res) => {
+router.put("/profile", verifyToken, verifyMfaIfEnabled, async (req, res) => {
   try {
     const userId = req.user.uid;
     const { name, gender, birthdate } = req.body;
+
+    logger.debug("Profile update request", {
+      userId,
+      hasName: !!name,
+      hasGender: !!gender,
+      hasBirthdate: !!birthdate,
+      requestId: req.requestId,
+    });
 
     // Validate required fields
     if (!name) {
@@ -199,25 +299,105 @@ router.put("/profile", verifyToken, async (req, res) => {
 
     // Update Firebase display name if changed
     const userData = userDoc.data();
-    if (userData.name !== name) {
-      const firebaseUser = await admin.auth().getUser(userId);
-      if (firebaseUser.displayName !== name) {
-        await admin.auth().updateUser(userId, { displayName: name });
+
+    // Try to decrypt existing data if available
+    let existingData = {};
+    if (userData.sensitiveData) {
+      try {
+        existingData = decrypt(userData.sensitiveData);
+        logger.debug("Successfully decrypted existing data", {
+          userId,
+          requestId: req.requestId,
+        });
+      } catch (err) {
+        logger.error("Error decrypting existing data", err, {
+          userId,
+          requestId: req.requestId,
+        });
+        // Continue with empty existing data
       }
     }
 
-    // Update Firestore document
-    await userRef.update({
+    // Update Firebase Auth display name
+    try {
+      const firebaseUser = await admin.auth().getUser(userId);
+      if (firebaseUser.displayName !== name) {
+        await admin.auth().updateUser(userId, { displayName: name });
+        logger.debug("Updated Firebase Auth display name", {
+          userId,
+          requestId: req.requestId,
+        });
+      }
+    } catch (authError) {
+      logger.error("Error updating Firebase Auth user", authError, {
+        userId,
+        requestId: req.requestId,
+      });
+      // Continue even if Auth update fails
+    }
+
+    // Create new data to encrypt
+    const newSensitiveData = {
       name,
       gender,
       birthdate,
+      // Preserve any other sensitive fields
+      ...existingData,
+      // But ensure our new values take precedence
+      name,
+      gender,
+      birthdate,
+    };
+
+    logger.debug("Preparing to encrypt updated data", {
+      userId,
+      requestId: req.requestId,
+    });
+
+    // Encrypt sensitive data
+    const encryptedData = encrypt(newSensitiveData);
+
+    // Update Firestore document
+    await userRef.update({
+      sensitiveData: encryptedData,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    res.status(200).json({ message: "Profile updated successfully" });
+    // Calculate age
+    const birthDate = new Date(birthdate);
+    const age = Math.floor(
+      (new Date() - birthDate) / (365.25 * 24 * 60 * 60 * 1000)
+    );
+
+    logger.info("Profile updated successfully", {
+      userId,
+      requestId: req.requestId,
+    });
+
+    // Log profile update
+    logger.userAction(userId, "update_profile", {
+      requestId: req.requestId,
+      fields: ["name", "gender", "birthdate"],
+    });
+
+    // Return updated profile for immediate UI refresh
+    res.status(200).json({
+      message: "Profile updated successfully",
+      updatedProfile: {
+        name,
+        gender,
+        birthdate,
+        age,
+      },
+    });
   } catch (error) {
-    console.error("Error updating user profile:", error);
-    res.status(500).json({ message: "Error updating user profile" });
+    logger.error("Error updating user profile", error, {
+      userId: req.user?.uid,
+      requestId: req.requestId,
+    });
+    res
+      .status(500)
+      .json({ message: "Error updating user profile", error: error.message });
   }
 });
 
@@ -242,6 +422,18 @@ router.get("/patients", verifyToken, isDoctor, async (req, res) => {
       const patientId = patientDoc.id;
       const patientData = patientDoc.data();
 
+      // Base patient data
+      let patientInfo = {
+        id: patientId,
+        email: patientData.email,
+        role: patientData.role,
+      };
+
+      // Decrypt sensitive data
+      if (patientData.sensitiveData) {
+        patientInfo = decryptUserData(patientData.sensitiveData, patientInfo);
+      }
+
       // Get latest health data if available
       const healthSnapshot = await admin
         .firestore()
@@ -254,22 +446,43 @@ router.get("/patients", verifyToken, isDoctor, async (req, res) => {
       let latestHealthData = null;
       if (!healthSnapshot.empty) {
         const healthData = healthSnapshot.docs[0].data();
-        latestHealthData = {
-          ...healthData,
-          timestamp: healthData.timestamp?.toDate(),
-        };
+
+        // Decrypt health data if it's encrypted
+        if (healthData.sensitiveData) {
+          const decryptedSensitiveData = decrypt(healthData.sensitiveData);
+          latestHealthData = {
+            ...healthData,
+            ...decryptedSensitiveData,
+            timestamp: healthData.timestamp?.toDate(),
+          };
+          delete latestHealthData.sensitiveData;
+        } else {
+          latestHealthData = {
+            ...healthData,
+            timestamp: healthData.timestamp?.toDate(),
+          };
+        }
+
+        // Decrypt prediction data if it exists
+        if (healthData.prediction) {
+          try {
+            latestHealthData.prediction = decrypt(healthData.prediction);
+          } catch (predictionError) {
+            console.error("Error decrypting prediction data:", predictionError);
+            // Keep original prediction data if decryption fails
+          }
+        }
       }
 
-      patientsData.push({
-        id: patientId,
-        email: patientData.email,
-        name: patientData.name,
-        birthdate: patientData.birthdate,
-        gender: patientData.gender,
-        position: patientData.position || null,
-        latestHealthData,
-      });
+      patientInfo.latestHealthData = latestHealthData;
+      patientsData.push(patientInfo);
     }
+
+    // Log patients view
+    logger.userAction(req.user.uid, "view_patients", {
+      requestId: req.requestId,
+      patientCount: patientsData.length,
+    });
 
     res.status(200).json(patientsData);
   } catch (error) {
@@ -301,13 +514,31 @@ router.post("/reject-doctor/:userId", verifyAdmin, async (req, res) => {
       status: "rejected",
     });
 
+    // Decrypt sensitive data to get the user's name
+    let userName = "Unknown";
+    if (userData.sensitiveData) {
+      try {
+        const decryptedData = decrypt(userData.sensitiveData);
+        userName = decryptedData.name || "Unknown";
+      } catch (decryptError) {
+        console.error("Error decrypting user data:", decryptError);
+      }
+    }
+
     // Add to action history
     await admin.firestore().collection("adminActions").add({
       userId,
-      userName: userData.name,
+      userName,
       action: "rejected",
       adminId: req.user.uid,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Log admin action
+    logger.userAction(req.user.uid, "reject_doctor", {
+      doctorId: userId,
+      doctorName: userName,
+      requestId: req.requestId,
     });
 
     res.json({ message: "Doctor account rejected successfully" });
@@ -335,6 +566,12 @@ router.get("/action-history", verifyAdmin, async (req, res) => {
           doc.data().timestamp?.toDate().toISOString() ||
           new Date().toISOString(),
       });
+    });
+
+    // Log admin action
+    logger.userAction(req.user.uid, "view_action_history", {
+      requestId: req.requestId,
+      recordCount: history.length,
     });
 
     res.json(history);
